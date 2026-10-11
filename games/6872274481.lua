@@ -6679,7 +6679,16 @@ end)
 
 local Attacking
 run(function()
-	local SwordTiming = vape.Libraries.swordtiming
+	local SwordTiming = vape.Libraries.swordtiming or {
+		ArrivalFloor = 0.1,
+		HitFloor = 0.1,
+		GapFloor = 0.1,
+		HighSpacing = 10 / 34,
+		Calculate = function(swordSpeed, furyMultiplier)
+			local attackCooldown = swordSpeed / math.max(furyMultiplier, 0.01)
+			return attackCooldown, 1, attackCooldown, attackCooldown, false
+		end
+	}
 	local Killaura
 	local Targets
 	local Sort
