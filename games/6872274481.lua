@@ -6897,7 +6897,7 @@ run(function()
 	    end
 	end
 	
-	Killaura = vape.Categories.Blatant:CreateModule({
+	Killaura = vape.Categories.Utility:CreateModule({
 	    Name = "Killaura",
 	    Function = function(Callback: boolean)
 	        if Callback then
