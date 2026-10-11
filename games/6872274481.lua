@@ -6782,7 +6782,8 @@ run(function()
 	local CleanFloor: number = SwordTiming.HighSpacing
 	local SendReach: number = bedwars.CombatConstant.REGION_SWORD_CHARACTER_DISTANCE - 0.1
 	local BurstShots, BurstWait = 0, 0
-	local FuryScale: number = 1 - (bedwars.BlackMarketeerBalance.FURY_POTION_ATTACK_SPEED_MULTIPLIER - 1)
+	local FuryMultiplier = bedwars.BlackMarketeerBalance and bedwars.BlackMarketeerBalance.FURY_POTION_ATTACK_SPEED_MULTIPLIER or 1
+	local FuryScale: number = 1 - (FuryMultiplier - 1)
 	local SwordEffect = getmetatable(bedwars.SwordController).__index.playSwordEffect -- fully detected
 	local ScanInterval: number = 1 / 75
 	local FlatScale: Vector3 = Vector3.new(1, 0, 1)
