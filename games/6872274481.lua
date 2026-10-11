@@ -6900,7 +6900,7 @@ run(function()
 	    end
 	end
 	
-	Killaura = vape.Categories.Utility:CreateModule({
+	Killaura = vape.Categories.Blatent:CreateModule({
 	    Name = "Killaura",
 	    AlwaysVisible = true,
 	    Function = function(Callback: boolean)
