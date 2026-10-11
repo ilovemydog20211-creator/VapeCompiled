@@ -6850,7 +6850,7 @@ run(function()
 								end
 
 								if delta.Magnitude > AttackRange.Value then continue end
-								if delta.Magnitude < 14.4 and (tick() - swingCooldown) < math.max(ChargeTime.Value, 0.11) then continue end
+								if delta.Magnitude < 14.4 and (tick() - swingCooldown) < math.max(ChargeTime.Value, 0.02) then continue end
 
 								local actualRoot = v.Character.PrimaryPart
 								if actualRoot then
@@ -6944,7 +6944,7 @@ run(function()
 	SwingRange = Killaura:CreateSlider({
 		Name = 'Swing range',
 		Min = 1,
-		Max = 50,
+		Max = 20,
 		Default = 20,
 		Suffix = function(val)
 			return val == 1 and 'stud' or 'studs'
@@ -6953,7 +6953,7 @@ run(function()
 	AttackRange = Killaura:CreateSlider({
 		Name = 'Attack range',
 		Min = 1,
-		Max = 23,
+		Max = 20,
 		Default = 20,
 		Suffix = function(val)
 			return val == 1 and 'stud' or 'studs'
@@ -7175,7 +7175,6 @@ run(function()
 		Tooltip = 'Only attacks while swinging manually'
 	})
 end)
-
 
 run(function()
 	local ProjectileAura
