@@ -1,6 +1,12 @@
 local vape = shared.vape
+local _loadstring = loadstring
 local loadstring = function(...)
-	local res, err = loadstring(...)
+	local res, err
+	if type(_loadstring) == 'function' then
+		res, err = _loadstring(...)
+	else
+		error('loadstring is unavailable in this environment')
+	end
 	if err and vape then
 		vape:CreateNotification('Vape', 'Failed to load : '..err, 30, 'alert')
 	end
