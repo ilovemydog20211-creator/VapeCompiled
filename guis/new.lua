@@ -131,6 +131,7 @@ do
 		['newvape/assets/new/closemini.png'] = 'rbxassetid://108320409341289',
 		['newvape/assets/new/closetiny.png'] = 'rbxassetid://71393233149714',
 		['newvape/assets/new/colorpreview.png'] = 'rbxassetid://140438628568318',
+		['newvape/assets/new/combaticon.png'] = 'rbxasset://combaticon.png',
 		['newvape/assets/new/combat.png'] = 'rbxassetid://94762732349053',
 		['newvape/assets/new/customtheme.png'] = 'rbxassetid://91756736022800',
 		['newvape/assets/new/discord.png'] = 'rbxassetid://99871463341003',
@@ -681,22 +682,24 @@ end
 function vape:Load(skipgui, profile)
 	local guiData = {Categories = {}}
 	local oldProfile = self.Profile
-	local canSave = true
+	local saveAfterLoad = false
 	local toggleCount = 0
 
 	if isfile('newvape/profiles/'..game.GameId..'.gui.txt') then
-		guiData = loadJson('newvape/profiles/'..game.GameId..'.gui.txt')
-		if not guiData then
+		local loadedGuiData = loadJson('newvape/profiles/'..game.GameId..'.gui.txt')
+		if not loadedGuiData or type(loadedGuiData.Categories) ~= 'table' then
 			guiData = {Categories = {}}
 			self:CreateNotification('Vape', 'Failed to load GUI settings.', 10, 'alert')
-			canSave = false
+			saveAfterLoad = true
+		else
+			guiData = loadedGuiData
 		end
 
 		if guiData.v ~= 1 then
 			guiData.Categories.Main = nil
 		end
 
-		self.Profile = profile or guiData.Profile or 'default'
+		self.Profile = profile or (type(guiData.Profile) == 'string' and guiData.Profile) or 'default'
 		if self.ProfileLabel then
 			self.ProfileLabel.Text = #self.Profile > 10 and self.Profile:sub(1, 10)..'...' or self.Profile
 			self.ProfileLabel.Size = UDim2.fromOffset(getfontbounds(self.ProfileLabel.Text, self.ProfileLabel.TextSize, self.ProfileLabel.Font).X + 16, 24)
@@ -718,10 +721,13 @@ function vape:Load(skipgui, profile)
 
 	if isfile('newvape/profiles/'..self.Profile..self.Place..'.txt') then
 		local mainData = loadJson('newvape/profiles/'..self.Profile..self.Place..'.txt')
-		if not mainData then
+		if not mainData
+			or type(mainData.Categories) ~= 'table'
+			or type(mainData.Modules) ~= 'table'
+			or type(mainData.Legit) ~= 'table' then
 			mainData = {Categories = {}, Modules = {}, Legit = {}}
 			self:CreateNotification('Vape', 'Failed to load '..self.Profile..' profile.', 10, 'alert')
-			canSave = false
+			saveAfterLoad = true
 		end
 
 		if mainData.v ~= 1 then
@@ -755,7 +761,7 @@ function vape:Load(skipgui, profile)
 
 		self:UpdateTextGUI(true)
 	else
-		self:Save()
+		saveAfterLoad = true
 	end
 
 	if self.Profile ~= oldProfile and skipgui then
@@ -767,7 +773,10 @@ function vape:Load(skipgui, profile)
 		self.Downloader = nil
 	end
 
-	self.Loaded = canSave
+	self.Loaded = true
+	if saveAfterLoad then
+		self:Save()
+	end
 
 	if inputService.TouchEnabled and not skipgui then
 		local button = Instance.new('TextButton')
@@ -908,10 +917,11 @@ function vape:LoadGUI()
 		Icon = getvapeasset('newvape/assets/new/inventory.png'),
 		Size = UDim2.fromOffset(15, 14)
 	})
-	vape.Categories.Main:CreateDivider({
-		Text = 'misc'
+	vape:CreateCategory({
+		Name = 'Kits',
+		Icon = getvapeasset('newvape/assets/new/combaticon.png'),
+		Size = UDim2.fromOffset(13, 14)
 	})
-	
 	--[[
 		Friends
 	]]
@@ -5899,6 +5909,15 @@ components = {
 			button.BackgroundColor3 = (isHover or modulechildren.Visible) and color.Light(uipallet.Main, 0.02) or uipallet.Main
 			dots.ImageColor3 = self.Enabled and Color3.fromRGB(50, 50, 50) or color.Light(uipallet.Main, 0.37)
 			component.Bind:SetColor(color.Dark(uipallet.Text, 0.43))
+
+			if self.Enabled then
+				self:Color(
+					vape.GUIColor.Hue,
+					vape.GUIColor.Sat,
+					vape.GUIColor.Value,
+					vape.GUIColor.Rainbow and vape.RainbowMode.Value ~= 'Retro'
+				)
+			end
 		
 			if not self.Enabled then
 				for _, v in self.Connections do
