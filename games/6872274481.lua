@@ -6678,7 +6678,7 @@ run(function()
 end)
 
 local Attacking
-Run(function()
+run(function()
 	local SwordTiming = vape.Libraries.swordtiming
 	local Killaura
 	local Targets
