@@ -6775,7 +6775,7 @@ run(function()
 	ArcCheck.FilterType = Enum.RaycastFilterType.Exclude
 	local AttackRemote = {FireServer = function() end}
 	local SwordSwingMiss = {FireServer = function() end}
-	local ProjectileRemote = bedwars.Handler:Get("ProjectileFire")
+	local ProjectileRemote = {Fire = function() end}
 	local FastHitPending, LastShot = nil, 0
 	local ArrivalFloor: number = SwordTiming.ArrivalFloor
 	local HitBudget, HitFloor, GapFloor = 0.2, SwordTiming.HitFloor, SwordTiming.GapFloor
@@ -6784,7 +6784,7 @@ run(function()
 	local BurstShots, BurstWait = 0, 0
 	local FuryMultiplier = bedwars.BlackMarketeerBalance and bedwars.BlackMarketeerBalance.FURY_POTION_ATTACK_SPEED_MULTIPLIER or 1
 	local FuryScale: number = 1 - (FuryMultiplier - 1)
-	local SwordEffect = getmetatable(bedwars.SwordController).__index.playSwordEffect -- fully detected
+	local SwordEffect = bedwars.SwordController and bedwars.SwordController.playSwordEffect
 	local ScanInterval: number = 1 / 75
 	local FlatScale: Vector3 = Vector3.new(1, 0, 1)
 	local ParkedPosition: Vector3 = Vector3.new(9e9, 9e9, 9e9)
@@ -6800,8 +6800,10 @@ run(function()
 	        and not (Drops and Character:IsDescendantOf(Drops))
 	end
 	task.spawn(function()
-	    AttackRemote = bedwars.Handler:Get("SwordHit")
-	    SwordSwingMiss = bedwars.Handler:Get("SwordSwingMiss")
+	    local Handler = bedwars.Handler
+	    if not Handler then return end
+	    AttackRemote = Handler:Get("SwordHit")
+	    SwordSwingMiss = Handler:Get("SwordSwingMiss")
 	    HitBudget = 60 / AttackRemote:GetRateLimit()
 	end)
 	
@@ -6900,6 +6902,7 @@ run(function()
 	
 	Killaura = vape.Categories.Utility:CreateModule({
 	    Name = "Killaura",
+	    AlwaysVisible = true,
 	    Function = function(Callback: boolean)
 	        if Callback then
 	            local PreviousSwing = bedwars.SwordController.playSwordEffect
@@ -7013,8 +7016,12 @@ run(function()
 	                        }
 	                    }
 	                }
-	                debug.setupvalue(SwordEffect, 7, FakeKnit)
-	                debug.setupvalue(bedwars.ScytheController.playLocalAnimation, 3, FakeKnit)
+					if SwordEffect then
+						debug.setupvalue(SwordEffect, 7, FakeKnit)
+					end
+					if bedwars.ScytheController and bedwars.ScytheController.playLocalAnimation then
+						debug.setupvalue(bedwars.ScytheController.playLocalAnimation, 3, FakeKnit)
+					end
 	
 	                task.spawn(function()
 	                    local Started: boolean = false
@@ -7517,8 +7524,12 @@ run(function()
 	                v.Parent = nil
 	                ParticleShown[v] = false
 	            end
-	            debug.setupvalue(SwordEffect, 7, bedwars.Knit)
-	            debug.setupvalue(bedwars.ScytheController.playLocalAnimation, 3, bedwars.Knit)
+				if SwordEffect then
+					debug.setupvalue(SwordEffect, 7, bedwars.Knit)
+				end
+				if bedwars.ScytheController and bedwars.ScytheController.playLocalAnimation then
+					debug.setupvalue(bedwars.ScytheController.playLocalAnimation, 3, bedwars.Knit)
+				end
 	            if bedwars.SwordController.playSwordEffect == SwingHook then
 	                bedwars.SwordController.playSwordEffect = OldSwing
 	            end

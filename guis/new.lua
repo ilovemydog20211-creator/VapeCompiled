@@ -5872,7 +5872,9 @@ components = {
 				end
 			end
 		
-			if self.Visible ~= data.Visible then
+			if props.AlwaysVisible then
+				self:SetVisible(true, true)
+			elseif self.Visible ~= data.Visible then
 				self:SetVisible(data.Visible, true)
 			end
 		end
