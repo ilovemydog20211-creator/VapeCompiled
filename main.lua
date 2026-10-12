@@ -79,11 +79,11 @@ if shared.VapeKeyAuthorized ~= true then
 	submitCorner.Parent = submit
 
 	local function checkKey()
-		if keyBox.Text == '1987' then
+		if keyBox.Text == '3971' then
 			shared.VapeKeyAuthorized = true
 			screenGui:Destroy()
 		else
-			status.Text = 'Incorrect key. Try again.'
+			status.Text = 'Incorrect key. Try again or just ask the owner u jobless bastered.'
 			keyBox.Text = ''
 			keyBox:CaptureFocus()
 		end
