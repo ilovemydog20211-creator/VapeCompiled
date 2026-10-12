@@ -316,7 +316,10 @@ if shared.VapeKeyAuthorized ~= true then
 			Url = apiUrl:gsub('/+$', '')..'/validate',
 			Method = 'POST',
 			Headers = {['Content-Type'] = 'application/json'},
-			Body = httpService:JSONEncode({key = key})
+			Body = httpService:JSONEncode({
+				key = key,
+				robloxUserId = game:GetService('Players').LocalPlayer.UserId
+			})
 		})
 		if not success then
 			return false, 'Could not reach the key service. Try again.'
@@ -341,6 +344,9 @@ if shared.VapeKeyAuthorized ~= true then
 		end
 		if payload.valid then
 			return true
+		end
+		if payload.reason == 'account_mismatch' then
+			return false, 'This key is locked to another Roblox account.'
 		end
 		return false, 'Invalid or revoked key.'
 	end

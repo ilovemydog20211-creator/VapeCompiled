@@ -81,22 +81,37 @@ class KeyStore:
             self.users = updated_users
             return key
 
-    def validate(self, key):
+    def validate_for_roblox_user(self, key, roblox_user_id):
         if not isinstance(key, str) or not KEY_PATTERN.fullmatch(key):
-            return False
-        key_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()
-        with self.lock:
-            return any(record["keyHash"] == key_hash for record in self.users.values())
+            return None, "invalid"
+        if (
+            isinstance(roblox_user_id, bool)
+            or not isinstance(roblox_user_id, int)
+            or roblox_user_id <= 0
+        ):
+            return None, "invalid_user"
 
-    def owner_for_key(self, key):
-        if not isinstance(key, str) or not KEY_PATTERN.fullmatch(key):
-            return None
         key_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()
         with self.lock:
             for discord_id, record in self.users.items():
-                if record["keyHash"] == key_hash:
-                    return discord_id
-        return None
+                if record["keyHash"] != key_hash:
+                    continue
+
+                roblox_id = str(roblox_user_id)
+                bound_id = record.get("robloxUserId")
+                if bound_id is not None and bound_id != roblox_id:
+                    return None, "account_mismatch"
+
+                if bound_id is None:
+                    updated_users = dict(self.users)
+                    updated_record = dict(record)
+                    updated_record["robloxUserId"] = roblox_id
+                    updated_users[discord_id] = updated_record
+                    self._save(updated_users)
+                    self.users = updated_users
+
+                return discord_id, "valid"
+        return None, "invalid"
 
     def revoke(self, discord_id):
         discord_id = str(discord_id)
@@ -179,14 +194,38 @@ def make_api_handler(key_store, on_valid_key=None):
                 self._send_json(400, {"error": "Invalid JSON"})
                 return
 
-            if not isinstance(payload, dict) or not isinstance(payload.get("key"), str):
-                self._send_json(400, {"error": "A key is required"})
+            if (
+                not isinstance(payload, dict)
+                or not isinstance(payload.get("key"), str)
+                or isinstance(payload.get("robloxUserId"), bool)
+                or not isinstance(payload.get("robloxUserId"), int)
+                or payload["robloxUserId"] <= 0
+            ):
+                self._send_json(
+                    400,
+                    {"error": "A key and positive Roblox user ID are required"},
+                )
                 return
 
-            owner_id = key_store.owner_for_key(payload["key"])
+            try:
+                owner_id, result = key_store.validate_for_roblox_user(
+                    payload["key"],
+                    payload["robloxUserId"],
+                )
+            except OSError as error:
+                print(f"Could not save Roblox key binding: {error}")
+                self._send_json(500, {"error": "Could not save key binding"})
+                return
+
             if owner_id is not None and on_valid_key:
                 on_valid_key(owner_id)
-            self._send_json(200, {"valid": owner_id is not None})
+            self._send_json(
+                200,
+                {
+                    "valid": result == "valid",
+                    "reason": result,
+                },
+            )
 
         def log_message(self, format_string, *args):
             return

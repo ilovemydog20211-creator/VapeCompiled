@@ -23,7 +23,11 @@ key. Logs do not identify or verify the Roblox account using the key.
    to a file on persistent storage if the host's working directory is not persistent.
 5. Send `.key` in the configured Discord server. The bot DMs the generated key.
 
-The HTTP API accepts `POST /validate` with JSON `{ "key": "..." }`. The Lua script also needs
+The HTTP API accepts `POST /validate` with JSON containing both `key` and `robloxUserId`.
+On first successful use, the service permanently binds that key to the submitted Roblox
+user ID; subsequent checks from a different ID are rejected. This is a client-submitted ID,
+not cryptographic Roblox account verification, so a modified client can spoof it.
+The Lua script also needs
 `shared.VapeKeyApiUrl` set to the public HTTPS base URL before it starts. The Python listener
 itself is plain HTTP; use a TLS/HTTPS proxy or a host-provided HTTPS endpoint in front of the
 assigned port. A raw IP and port do not provide HTTPS by themselves.
