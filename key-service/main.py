@@ -5,6 +5,7 @@ import re
 import secrets
 import threading
 import time
+import asyncio
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -87,6 +88,16 @@ class KeyStore:
         with self.lock:
             return any(record["keyHash"] == key_hash for record in self.users.values())
 
+    def owner_for_key(self, key):
+        if not isinstance(key, str) or not KEY_PATTERN.fullmatch(key):
+            return None
+        key_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        with self.lock:
+            for discord_id, record in self.users.items():
+                if record["keyHash"] == key_hash:
+                    return discord_id
+        return None
+
     def revoke(self, discord_id):
         discord_id = str(discord_id)
         with self.lock:
@@ -98,8 +109,16 @@ class KeyStore:
             self.users = updated_users
             return True
 
+    def revoke_all(self):
+        with self.lock:
+            count = len(self.users)
+            if count:
+                self._save({})
+                self.users = {}
+            return count
 
-def make_api_handler(key_store):
+
+def make_api_handler(key_store, on_valid_key=None):
     rate_lock = threading.Lock()
     rate_windows = {}
 
@@ -164,7 +183,10 @@ def make_api_handler(key_store):
                 self._send_json(400, {"error": "A key is required"})
                 return
 
-            self._send_json(200, {"valid": key_store.validate(payload["key"])})
+            owner_id = key_store.owner_for_key(payload["key"])
+            if owner_id is not None and on_valid_key:
+                on_valid_key(owner_id)
+            self._send_json(200, {"valid": owner_id is not None})
 
         def log_message(self, format_string, *args):
             return
@@ -185,6 +207,28 @@ def main():
     intents = discord.Intents.default()
     intents.message_content = True
     bot = discord.Client(intents=intents)
+
+    async def log_key_use(discord_id):
+        guild = bot.get_guild(int(DISCORD_GUILD_ID))
+        if guild is None:
+            raise RuntimeError("Configured Discord server is not available")
+        channel = discord.utils.get(guild.text_channels, name="key-usage-logs")
+        if channel is None:
+            return
+        await channel.send(f"Valid key used by Discord account <@{discord_id}>.")
+
+    def queue_key_use_log(discord_id):
+        future = asyncio.run_coroutine_threadsafe(
+            log_key_use(discord_id),
+            bot.loop,
+        )
+
+        def report_log_error(completed):
+            error = completed.exception()
+            if error:
+                print(f"Could not log key use: {error}")
+
+        future.add_done_callback(report_log_error)
 
     @bot.event
     async def on_message(message):
@@ -217,6 +261,68 @@ def main():
                 )
             return
 
+        if command == ".logs":
+            if not message.author.guild_permissions.administrator:
+                await message.reply("Only server admins can create the key log channel.")
+                return
+            channel = discord.utils.get(
+                message.guild.text_channels,
+                name="key-usage-logs",
+            )
+            bot_member = message.guild.me
+            if bot_member is None:
+                raise RuntimeError("Bot member is not available in the configured server")
+            private_permissions = {
+                message.guild.default_role: discord.PermissionOverwrite(
+                    view_channel=False,
+                ),
+                bot_member: discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True,
+                ),
+            }
+            if channel is None:
+                channel = await message.guild.create_text_channel(
+                    "key-usage-logs",
+                    overwrites=private_permissions,
+                    reason=f"Key usage logs requested by {message.author}",
+                )
+            else:
+                await channel.set_permissions(
+                    message.guild.default_role,
+                    view_channel=False,
+                    reason="Restrict access to key usage logs",
+                )
+                await channel.set_permissions(
+                    bot_member,
+                    private_permissions[bot_member],
+                    reason="Allow bot to write key usage logs",
+                )
+            await message.reply(f"Key usage logs are enabled in {channel.mention}.")
+            return
+
+        revoke_match = re.fullmatch(
+            r"[.,]revoke\s+(all|<@!?(\d+)>)",
+            command,
+            flags=re.IGNORECASE,
+        )
+        if revoke_match:
+            if not message.author.guild_permissions.administrator:
+                await message.reply("Only server admins can revoke keys.")
+                return
+
+            if revoke_match.group(1).lower() == "all":
+                count = key_store.revoke_all()
+                await message.reply(f"Revoked all {count} active key(s).")
+            else:
+                revoked = key_store.revoke(revoke_match.group(2))
+                await message.reply(
+                    "That user's key has been revoked."
+                    if revoked else "That user has no active key."
+                )
+            return
+
         match = re.fullmatch(r"[.,]key\s+revoke\s+<@!?(\d+)>", command)
         if match:
             if not message.author.guild_permissions.administrator:
@@ -234,7 +340,7 @@ def main():
 
     api_server = ThreadingHTTPServer(
         ("0.0.0.0", PORT),
-        make_api_handler(key_store),
+        make_api_handler(key_store, queue_key_use_log),
     )
     api_server.daemon_threads = True
     api_thread = threading.Thread(

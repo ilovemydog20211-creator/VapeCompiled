@@ -4,7 +4,10 @@
 `1558998367512559636`, and `.key` requires role ID `1559000140675813417` unless the member
 is the server owner. Use `.key` or `,key` to request a key. Each eligible user has one active
 key; requesting another rotates it. A Discord administrator can revoke a key with
-`.key revoke @user` or `,key revoke @user`.
+`.key revoke @user` or `,key revoke @user`, revoke every key with `.revoke all`, or revoke an
+individual key with `.revoke @user`. An administrator can create a private usage-log channel
+with `.logs`; successful validations are logged with the Discord account that was issued the
+key. Logs do not identify or verify the Roblox account using the key.
 
 ## Bot-Hosting setup
 
@@ -12,8 +15,9 @@ key; requesting another rotates it. A Discord administrator can revoke a key wit
 2. Add `DISCORD_BOT_TOKEN` in the host's private environment-variable settings. Use a newly
    reset token and do not put it in source code or chat.
 3. Enable **Message Content Intent** in the Discord Developer Portal. Give the bot permission
-   to read and reply to server messages and send DMs. Assign the required role to users who
-   should be able to generate keys.
+   to read and reply to server messages, send DMs, manage channels (for `.logs`), and view/send
+   in the private log channel. Assign the required role to users who should be able to generate
+   keys.
 4. The app listens on `PORT`, then `SERVER_PORT`, then `8787`. Configure the host's assigned
    port as `PORT` if it does not provide either variable automatically. Set `KEY_STORE_PATH`
    to a file on persistent storage if the host's working directory is not persistent.
