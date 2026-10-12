@@ -5,7 +5,7 @@
   "description": "Discord key issuer and HTTP validation API",
   "main": "index.js",
   "scripts": {
-    "start": "node --env-file=.env index.js",
+    "start": "node index.js",
     "test": "node --test"
   },
   "engines": {
