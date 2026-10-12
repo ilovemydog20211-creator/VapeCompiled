@@ -1,0 +1,17 @@
+{
+  "name": "zachv4-key-service",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Discord key issuer and HTTP validation API",
+  "main": "index.js",
+  "scripts": {
+    "start": "node --env-file=.env index.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "discord.js": "^14.19.3"
+  }
+}

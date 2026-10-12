@@ -303,11 +303,66 @@ if shared.VapeKeyAuthorized ~= true then
 	closeButton.Activated:Connect(closePrompt)
 
 	local checking = false
+	local function validateAccessKey(key)
+		local apiUrl = shared.VapeKeyApiUrl
+		if type(apiUrl) ~= 'string' or apiUrl == '' then
+			return false, 'The key API URL is not configured.'
+		end
+
+		local httpRequest = request or http_request or (syn and syn.request)
+		if type(httpRequest) ~= 'function' then
+			return false, 'This executor does not support HTTP requests.'
+		end
+
+		local httpService = game:GetService('HttpService')
+		local success, response = pcall(httpRequest, {
+			Url = apiUrl:gsub('/+$', '')..'/validate',
+			Method = 'POST',
+			Headers = {['Content-Type'] = 'application/json'},
+			Body = httpService:JSONEncode({key = key})
+		})
+		if not success then
+			return false, 'Could not reach the key service. Try again.'
+		end
+		if type(response) ~= 'table' then
+			return false, 'The key service returned an invalid response.'
+		end
+
+		local statusCode = tonumber(response.StatusCode or response.Status)
+		if statusCode ~= 200 then
+			if statusCode == 429 then
+				return false, 'Too many attempts. Wait a minute and try again.'
+			end
+			return false, 'The key service is unavailable. Try again later.'
+		end
+
+		local decoded, payload = pcall(function()
+			return httpService:JSONDecode(response.Body or response.body or '')
+		end)
+		if not decoded or type(payload) ~= 'table' or type(payload.valid) ~= 'boolean' then
+			return false, 'The key service returned an invalid response.'
+		end
+		if payload.valid then
+			return true
+		end
+		return false, 'Invalid or revoked key.'
+	end
+
 	local function checkKey()
 		if checking or dismissed then return end
 		checking = true
 
-		if keyBox.Text == '3971' then
+		status.TextColor3 = Color3.fromRGB(150, 190, 255)
+		status.Text = 'Checking key...'
+		submit.Text = 'Checking...'
+		submit.Active = false
+		local valid, message = validateAccessKey(keyBox.Text:match('^%s*(.-)%s*$'))
+		if dismissed then
+			checking = false
+			return
+		end
+
+		if valid then
 			status.TextColor3 = Color3.fromRGB(104, 226, 166)
 			status.Text = 'Access granted.'
 			submit.Text = 'Unlocked'
@@ -318,10 +373,12 @@ if shared.VapeKeyAuthorized ~= true then
 			shared.VapeKeyAuthorized = true
 			screenGui:Destroy()
 		else
-			if dismissed then return end
-			status.Text = 'Incorrect key. Try again or just ask the owner u jobless bastered.'
+			status.TextColor3 = Color3.fromRGB(255, 100, 100)
+			status.Text = message
 			keyBox.Text = ''
 			keyBox:CaptureFocus()
+			submit.Text = 'Unlock'
+			submit.Active = true
 			local center = frame.Position
 			for _, offset in {-9, 9, -6, 6, 0} do
 				local animation = tween(frame, 0.045, {Position = center + UDim2.fromOffset(offset, 0)})
