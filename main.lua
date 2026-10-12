@@ -33,14 +33,15 @@ if shared.VapeKeyAuthorized ~= true then
 
 	local dismissed = false
 	local snowRandom = Random.new()
-	for _ = 1, 24 do
+	for _ = 1, 96 do
 		task.spawn(function()
 			local snowflake = Instance.new('Frame')
 			snowflake.AnchorPoint = Vector2.new(0.5, 0.5)
 			snowflake.BackgroundColor3 = Color3.fromRGB(214, 231, 255)
-			snowflake.BackgroundTransparency = snowRandom:NextNumber(0.2, 0.6)
+			snowflake.BackgroundTransparency = snowRandom:NextNumber(0.12, 0.48)
 			snowflake.BorderSizePixel = 0
-			snowflake.Size = UDim2.fromOffset(snowRandom:NextInteger(2, 5), snowRandom:NextInteger(2, 5))
+			local flakeSize = snowRandom:NextInteger(2, 6)
+			snowflake.Size = UDim2.fromOffset(flakeSize, flakeSize)
 			snowflake.Rotation = snowRandom:NextInteger(0, 45)
 			snowflake.Parent = snowLayer
 
@@ -50,12 +51,12 @@ if shared.VapeKeyAuthorized ~= true then
 
 			while screenGui.Parent and not dismissed do
 				local startX = snowRandom:NextNumber(0, 1)
-				local endX = math.clamp(startX + snowRandom:NextNumber(-0.12, 0.12), 0, 1)
+				local endX = math.clamp(startX + snowRandom:NextNumber(-0.2, 0.2), 0, 1)
 				snowflake.Position = UDim2.fromScale(startX, -0.04)
-				snowflake.BackgroundTransparency = snowRandom:NextNumber(0.2, 0.6)
+				snowflake.BackgroundTransparency = snowRandom:NextNumber(0.12, 0.48)
 				local fall = tweenService:Create(
 					snowflake,
-					TweenInfo.new(snowRandom:NextNumber(4, 8), Enum.EasingStyle.Linear),
+					TweenInfo.new(snowRandom:NextNumber(3, 7), Enum.EasingStyle.Linear),
 					{
 						Position = UDim2.fromScale(endX, 1.05),
 						Rotation = snowflake.Rotation + 180,
@@ -125,7 +126,7 @@ if shared.VapeKeyAuthorized ~= true then
 	badgeText.BackgroundTransparency = 1
 	badgeText.Size = UDim2.fromScale(1, 1)
 	badgeText.Font = Enum.Font.GothamBold
-	badgeText.Text = 'VC'
+	badgeText.Text = 'ZV'
 	badgeText.TextColor3 = Color3.fromRGB(133, 179, 255)
 	badgeText.TextSize = 15
 	badgeText.Parent = badge
@@ -135,7 +136,7 @@ if shared.VapeKeyAuthorized ~= true then
 	title.Position = UDim2.fromOffset(78, 23)
 	title.Size = UDim2.new(1, -102, 0, 26)
 	title.Font = Enum.Font.GothamBold
-	title.Text = 'Welcome back'
+	title.Text = 'zachv4 | Welcome back'
 	title.TextColor3 = Color3.fromRGB(244, 246, 255)
 	title.TextSize = 20
 	title.TextXAlignment = Enum.TextXAlignment.Left
@@ -167,7 +168,7 @@ if shared.VapeKeyAuthorized ~= true then
 	subtitle.Position = UDim2.fromOffset(79, 51)
 	subtitle.Size = UDim2.new(1, -103, 0, 18)
 	subtitle.Font = Enum.Font.Gotham
-	subtitle.Text = 'Enter your access key to continue'
+	subtitle.Text = 'Enter your zachv4 access key to continue'
 	subtitle.TextColor3 = Color3.fromRGB(145, 153, 174)
 	subtitle.TextSize = 12
 	subtitle.TextXAlignment = Enum.TextXAlignment.Left
