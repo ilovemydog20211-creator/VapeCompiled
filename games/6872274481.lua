@@ -6709,6 +6709,7 @@ run(function()
 	local Particles, Boxes = {}, {}
 	local anims, AnimDelay, AnimTween, armC0 = vape.Libraries.auraanims, tick()
 	local AttackRemote = {FireServer = function() end}
+	local AnimationController, AnimationIsVisible, AnimationPlayAnimation, AnimationUpvalues
 	task.spawn(function()
 		AttackRemote = bedwars.Client:Get(remotes.AttackEntity).instance
 	end)
@@ -6747,23 +6748,39 @@ run(function()
 					end)
 				end
 
-				if Animation.Enabled and not (identifyexecutor and table.find({'Argon', 'Delta'}, ({identifyexecutor()})[1])) then
-					local fake = {
-						Controllers = {
-							ViewmodelController = {
-								isVisible = function()
-									return not Attacking
-								end,
-								playAnimation = function(...)
-									if not Attacking then
-										bedwars.ViewmodelController:playAnimation(select(2, ...))
+				local executorName = identifyexecutor and ({identifyexecutor()})[1]
+				if Animation.Enabled and executorName ~= 'Argon' then
+					if executorName == 'Delta' then
+						AnimationController = bedwars.Knit.Controllers.ViewmodelController
+						AnimationIsVisible = AnimationController.isVisible
+						AnimationPlayAnimation = AnimationController.playAnimation
+						AnimationController.isVisible = function()
+							return not Attacking
+						end
+						AnimationController.playAnimation = function(self, ...)
+							if not Attacking then
+								return AnimationPlayAnimation(self, ...)
+							end
+						end
+					else
+						local fake = {
+							Controllers = {
+								ViewmodelController = {
+									isVisible = function()
+										return not Attacking
+									end,
+									playAnimation = function(...)
+										if not Attacking then
+											bedwars.ViewmodelController:playAnimation(select(2, ...))
+										end
 									end
-								end
+								}
 							}
 						}
-					}
-					debug.setupvalue(oldSwing or bedwars.SwordController.playSwordEffect, 6, fake)
-					debug.setupvalue(bedwars.ScytheController.playLocalAnimation, 3, fake)
+						debug.setupvalue(oldSwing or bedwars.SwordController.playSwordEffect, 6, fake)
+						debug.setupvalue(bedwars.ScytheController.playLocalAnimation, 3, fake)
+						AnimationUpvalues = true
+					end
 
 					task.spawn(function()
 						local started = false
@@ -6920,8 +6937,16 @@ run(function()
 						lplr.PlayerGui.MobileUI['2'].Visible = true
 					end)
 				end
-				debug.setupvalue(oldSwing or bedwars.SwordController.playSwordEffect, 6, bedwars.Knit)
-				debug.setupvalue(bedwars.ScytheController.playLocalAnimation, 3, bedwars.Knit)
+				if AnimationController then
+					AnimationController.isVisible = AnimationIsVisible
+					AnimationController.playAnimation = AnimationPlayAnimation
+					AnimationController, AnimationIsVisible, AnimationPlayAnimation = nil, nil, nil
+				end
+				if AnimationUpvalues then
+					debug.setupvalue(oldSwing or bedwars.SwordController.playSwordEffect, 6, bedwars.Knit)
+					debug.setupvalue(bedwars.ScytheController.playLocalAnimation, 3, bedwars.Knit)
+					AnimationUpvalues = false
+				end
 				Attacking = false
 				if armC0 then
 					AnimTween = tweenService:Create(gameCamera.Viewmodel.RightHand.RightWrist, TweenInfo.new(AnimationTween.Enabled and 0.001 or 0.3, Enum.EasingStyle.Exponential), {
