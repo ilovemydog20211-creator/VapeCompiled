@@ -304,10 +304,7 @@ if shared.VapeKeyAuthorized ~= true then
 
 	local checking = false
 	local function validateAccessKey(key)
-		local apiUrl = shared.VapeKeyApiUrl
-		if type(apiUrl) ~= 'string' or apiUrl == '' then
-			return false, 'The key API URL is not configured.'
-		end
+		local apiUrl = shared.VapeKeyApiUrl or 'http://fi16.bot-hosting.cloud:26061'
 
 		local httpRequest = request or http_request or (syn and syn.request)
 		if type(httpRequest) ~= 'function' then
