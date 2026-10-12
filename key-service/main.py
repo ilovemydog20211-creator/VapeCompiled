@@ -6,21 +6,127 @@ import secrets
 import threading
 import time
 import asyncio
-from datetime import datetime, timezone
+from collections import deque
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Optional
 
 import discord
+from discord import app_commands
 
 
 DISCORD_GUILD_ID = "1558998367512559636"
 ADMIN_ROLE_ID = "1559000140675813417"
 PORT = int(os.environ.get("PORT") or os.environ.get("SERVER_PORT") or "8787")
 KEY_STORE_PATH = Path(os.environ.get("KEY_STORE_PATH", "./data/keys.json"))
+MODERATION_STORE_PATH = Path(
+    os.environ.get("MODERATION_STORE_PATH", "./data/moderation.json")
+)
 KEY_PATTERN = re.compile(r"^ZV-[A-Za-z0-9_-]{32}$")
+LINK_PATTERN = re.compile(
+    r"(?<![@\w])(?:https?://)?(?:www\.)?"
+    r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}"
+    r"(?::\d{1,5})?(?:[/?#][^\s]*)?|"
+    r"discord(?:app)?\.com/invite/[a-z0-9-]+|discord\.gg/[a-z0-9-]+",
+    re.IGNORECASE,
+)
 RATE_LIMIT = 60
 RATE_WINDOW_SECONDS = 60
 MAX_BODY_BYTES = 1024
+
+
+class ModerationSettings:
+    DEFAULTS = {
+        "anti_raid": {
+            "enabled": False,
+            "threshold": 5,
+            "window_seconds": 10,
+            "punishment": "timeout",
+        },
+        "anti_link": {
+            "enabled": False,
+            "punishment": "delete",
+        },
+    }
+
+    def __init__(self, path):
+        self.path = path
+        self.lock = threading.Lock()
+        self.settings = {
+            name: values.copy() for name, values in self.DEFAULTS.items()
+        }
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._load()
+
+    def _load(self):
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+
+        if (
+            not isinstance(data, dict)
+            or data.get("version") != 1
+            or not isinstance(data.get("settings"), dict)
+        ):
+            raise ValueError("Moderation settings have an unsupported format")
+
+        for name, values in data["settings"].items():
+            if name not in self.DEFAULTS or not isinstance(values, dict):
+                raise ValueError("Moderation settings contain an invalid section")
+            merged = self.settings[name].copy()
+            merged.update(values)
+            if name == "anti_raid":
+                if (
+                    not isinstance(merged["enabled"], bool)
+                    or isinstance(merged["threshold"], bool)
+                    or not isinstance(merged["threshold"], int)
+                    or not 2 <= merged["threshold"] <= 100
+                    or isinstance(merged["window_seconds"], bool)
+                    or not isinstance(merged["window_seconds"], int)
+                    or not 1 <= merged["window_seconds"] <= 300
+                    or merged["punishment"] not in {"warn", "timeout", "kick", "ban"}
+                ):
+                    raise ValueError("Moderation settings contain invalid anti-raid values")
+            elif (
+                not isinstance(merged["enabled"], bool)
+                or merged["punishment"] not in {
+                    "delete", "warn", "timeout", "kick", "ban"
+                }
+            ):
+                raise ValueError("Moderation settings contain invalid anti-link values")
+            self.settings[name] = merged
+
+    def get(self, section):
+        with self.lock:
+            return self.settings[section].copy()
+
+    def update(self, section, values):
+        with self.lock:
+            updated = self.settings[section].copy()
+            updated.update(values)
+            all_settings = {
+                name: config.copy() for name, config in self.settings.items()
+            }
+            all_settings[section] = updated
+            temporary_path = self.path.with_name(
+                f"{self.path.name}.{os.getpid()}.tmp"
+            )
+            try:
+                with temporary_path.open("w", encoding="utf-8") as file:
+                    json.dump(
+                        {"version": 1, "settings": all_settings},
+                        file,
+                        indent=2,
+                    )
+                    file.flush()
+                    os.fsync(file.fileno())
+                os.chmod(temporary_path, 0o600)
+                os.replace(temporary_path, self.path)
+            finally:
+                temporary_path.unlink(missing_ok=True)
+            self.settings = all_settings
 
 
 class KeyStore:
@@ -243,15 +349,167 @@ def main():
         raise RuntimeError("PORT must be a valid TCP port")
 
     key_store = KeyStore(KEY_STORE_PATH)
+    moderation_settings = ModerationSettings(MODERATION_STORE_PATH)
     intents = discord.Intents.default()
     intents.message_content = True
+    intents.members = True
     bot = discord.Client(intents=intents)
+    command_tree = app_commands.CommandTree(bot)
+    configured_guild = discord.Object(id=int(DISCORD_GUILD_ID))
+    recent_joins = deque()
+    raid_punished_users = set()
+
+    def is_member_admin(member, guild):
+        return (
+            guild.owner_id == member.id
+            or member.guild_permissions.administrator
+            or any(str(role.id) == ADMIN_ROLE_ID for role in member.roles)
+        )
 
     def is_server_admin(message):
+        return is_member_admin(message.author, message.guild)
+
+    def is_interaction_admin(interaction):
         return (
-            message.guild.owner_id == message.author.id
-            or message.author.guild_permissions.administrator
-            or any(str(role.id) == ADMIN_ROLE_ID for role in message.author.roles)
+            interaction.guild is not None
+            and is_member_admin(interaction.user, interaction.guild)
+        )
+
+    async def apply_punishment(member, punishment, reason):
+        try:
+            if punishment == "warn":
+                await member.send(f"Warning from {member.guild.name}: {reason}")
+            elif punishment == "timeout":
+                await member.timeout(timedelta(minutes=10), reason=reason)
+            elif punishment == "kick":
+                await member.kick(reason=reason)
+            elif punishment == "ban":
+                await member.guild.ban(
+                    member,
+                    reason=reason,
+                    delete_message_seconds=0,
+                )
+            else:
+                raise ValueError(f"Unsupported moderation punishment: {punishment}")
+        except discord.HTTPException as error:
+            print(
+                f"Could not apply {punishment} to {member} ({member.id}): {error}"
+            )
+
+    @command_tree.command(
+        name="antiraid",
+        description="Configure protection against rapid member joins",
+        guild=configured_guild,
+    )
+    @app_commands.describe(
+        enabled="Turn anti-raid protection on or off",
+        threshold="Number of joins that triggers protection (2-100)",
+        window_seconds="Time window for counting joins (1-300 seconds)",
+        punishment="Action to take when a raid is detected",
+    )
+    @app_commands.choices(
+        punishment=[
+            app_commands.Choice(name="Warn by DM", value="warn"),
+            app_commands.Choice(name="Timeout for 10 minutes", value="timeout"),
+            app_commands.Choice(name="Kick", value="kick"),
+            app_commands.Choice(name="Ban", value="ban"),
+        ]
+    )
+    async def antiraid(
+        interaction: discord.Interaction,
+        enabled: Optional[bool] = None,
+        threshold: Optional[app_commands.Range[int, 2, 100]] = None,
+        window_seconds: Optional[app_commands.Range[int, 1, 300]] = None,
+        punishment: Optional[app_commands.Choice[str]] = None,
+    ):
+        if not is_interaction_admin(interaction):
+            await interaction.response.send_message(
+                "Only server admins can configure moderation.",
+                ephemeral=True,
+            )
+            return
+
+        changes = {}
+        if enabled is not None:
+            changes["enabled"] = enabled
+        if threshold is not None:
+            changes["threshold"] = threshold
+        if window_seconds is not None:
+            changes["window_seconds"] = window_seconds
+        if punishment is not None:
+            changes["punishment"] = punishment.value
+        if changes:
+            try:
+                moderation_settings.update("anti_raid", changes)
+            except OSError as error:
+                print(f"Could not save anti-raid settings: {error}")
+                await interaction.response.send_message(
+                    "Could not save anti-raid settings. Check the bot's data directory.",
+                    ephemeral=True,
+                )
+                return
+
+        config = moderation_settings.get("anti_raid")
+        state = "enabled" if config["enabled"] else "disabled"
+        await interaction.response.send_message(
+            f"Anti-raid is **{state}**. It triggers at "
+            f"**{config['threshold']} joins / {config['window_seconds']} seconds** "
+            f"and uses **{config['punishment']}**.",
+            ephemeral=True,
+        )
+
+    @command_tree.command(
+        name="antilink",
+        description="Configure protection against links in server messages",
+        guild=configured_guild,
+    )
+    @app_commands.describe(
+        enabled="Turn anti-link protection on or off",
+        punishment="Action to take when a non-admin posts a link",
+    )
+    @app_commands.choices(
+        punishment=[
+            app_commands.Choice(name="Delete message only", value="delete"),
+            app_commands.Choice(name="Warn by DM", value="warn"),
+            app_commands.Choice(name="Timeout for 10 minutes", value="timeout"),
+            app_commands.Choice(name="Kick", value="kick"),
+            app_commands.Choice(name="Ban", value="ban"),
+        ]
+    )
+    async def antilink(
+        interaction: discord.Interaction,
+        enabled: Optional[bool] = None,
+        punishment: Optional[app_commands.Choice[str]] = None,
+    ):
+        if not is_interaction_admin(interaction):
+            await interaction.response.send_message(
+                "Only server admins can configure moderation.",
+                ephemeral=True,
+            )
+            return
+
+        changes = {}
+        if enabled is not None:
+            changes["enabled"] = enabled
+        if punishment is not None:
+            changes["punishment"] = punishment.value
+        if changes:
+            try:
+                moderation_settings.update("anti_link", changes)
+            except OSError as error:
+                print(f"Could not save anti-link settings: {error}")
+                await interaction.response.send_message(
+                    "Could not save anti-link settings. Check the bot's data directory.",
+                    ephemeral=True,
+                )
+                return
+
+        config = moderation_settings.get("anti_link")
+        state = "enabled" if config["enabled"] else "disabled"
+        await interaction.response.send_message(
+            f"Anti-link is **{state}** and uses **{config['punishment']}** "
+            "for links. Link messages are always deleted.",
+            ephemeral=True,
         )
 
     async def log_key_use(discord_id):
@@ -281,6 +539,28 @@ def main():
         if message.author.bot or message.guild is None:
             return
         if str(message.guild.id) != DISCORD_GUILD_ID:
+            return
+
+        link_config = moderation_settings.get("anti_link")
+        if (
+            link_config["enabled"]
+            and not is_server_admin(message)
+            and LINK_PATTERN.search(message.content)
+        ):
+            reason = "Posting links is not allowed while anti-link protection is enabled."
+            try:
+                await message.delete(reason="Anti-link protection")
+            except discord.HTTPException as error:
+                print(
+                    f"Could not delete link message from {message.author} "
+                    f"({message.author.id}): {error}"
+                )
+            if link_config["punishment"] != "delete":
+                await apply_punishment(
+                    message.author,
+                    link_config["punishment"],
+                    reason,
+                )
             return
 
         command = message.content.strip().lower()
@@ -379,6 +659,44 @@ def main():
             "Prefix commands require Message Content Intent enabled both in this "
             "bot's intents and in the Discord Developer Portal."
         )
+        try:
+            synced = await command_tree.sync(guild=configured_guild)
+            print(f"Synced {len(synced)} moderation slash command(s)")
+        except discord.HTTPException as error:
+            print(f"Could not sync moderation slash commands: {error}")
+
+    @bot.event
+    async def on_member_join(member):
+        if str(member.guild.id) != DISCORD_GUILD_ID:
+            return
+        if is_member_admin(member, member.guild):
+            return
+        config = moderation_settings.get("anti_raid")
+        if not config["enabled"]:
+            recent_joins.clear()
+            raid_punished_users.clear()
+            return
+
+        now = time.monotonic()
+        recent_joins.append((now, member))
+        while (
+            recent_joins
+            and now - recent_joins[0][0] > config["window_seconds"]
+        ):
+            recent_joins.popleft()
+        active_user_ids = {joined_member.id for _, joined_member in recent_joins}
+        raid_punished_users.intersection_update(active_user_ids)
+
+        if len(recent_joins) >= config["threshold"]:
+            for _, joined_member in recent_joins:
+                if joined_member.id in raid_punished_users:
+                    continue
+                raid_punished_users.add(joined_member.id)
+                await apply_punishment(
+                    joined_member,
+                    config["punishment"],
+                    "A rapid-join raid was detected in the server.",
+                )
 
     api_server = ThreadingHTTPServer(
         ("0.0.0.0", PORT),
