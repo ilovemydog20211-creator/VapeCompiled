@@ -27764,3 +27764,136 @@ run(function()
         end
     })
 end)
+run(function()
+	local rtxshaders
+	local lightingService = cloneref(game:GetService('Lighting'))
+	local lightingstuff = {}
+	local createdEffects = {}
+
+	rtxshaders = vape.Legit:CreateModule({
+		Name = 'RTX Shaders',
+		Function = function(callback)
+			if callback then
+				
+				lightingstuff.Brightness = lightingService.Brightness
+				lightingstuff.ColorShift_Bottom = lightingService.ColorShift_Bottom
+				lightingstuff.ColorShift_Top = lightingService.ColorShift_Top
+				lightingstuff.OutdoorAmbient = lightingService.OutdoorAmbient
+				lightingstuff.ClockTime = lightingService.ClockTime
+				lightingstuff.FogColor = lightingService.FogColor
+				lightingstuff.FogEnd = lightingService.FogEnd
+				lightingstuff.FogStart = lightingService.FogStart
+				lightingstuff.ExposureCompensation = lightingService.ExposureCompensation
+				lightingstuff.ShadowSoftness = lightingService.ShadowSoftness
+				lightingstuff.Ambient = lightingService.Ambient
+
+				for _, child in lightingService:GetChildren() do
+					table.insert(createdEffects, child)
+				end
+
+				lightingService:ClearAllChildren()
+
+				local Bloom = Instance.new('BloomEffect')
+				Bloom.Intensity = 0.1
+				Bloom.Threshold = 0
+				Bloom.Size = 100
+				Bloom.Parent = lightingService
+
+				local Tropic = Instance.new('Sky')
+				Tropic.Name = 'Tropic'
+				Tropic.SkyboxUp = 'http://www.roblox.com/asset/?id=169210149'
+				Tropic.SkyboxLf = 'http://www.roblox.com/asset/?id=169210133'
+				Tropic.SkyboxBk = 'http://www.roblox.com/asset/?id=169210090'
+				Tropic.SkyboxFt = 'http://www.roblox.com/asset/?id=169210121'
+				Tropic.StarCount = 100
+				Tropic.SkyboxDn = 'http://www.roblox.com/asset/?id=169210108'
+				Tropic.SkyboxRt = 'http://www.roblox.com/asset/?id=169210143'
+				Tropic.Parent = lightingService
+
+				local SkyBox = Instance.new('Sky')
+				SkyBox.SkyboxUp = 'http://www.roblox.com/asset/?id=196263782'
+				SkyBox.SkyboxLf = 'http://www.roblox.com/asset/?id=196263721'
+				SkyBox.SkyboxBk = 'http://www.roblox.com/asset/?id=196263721'
+				SkyBox.SkyboxFt = 'http://www.roblox.com/asset/?id=196263721'
+				SkyBox.CelestialBodiesShown = false
+				SkyBox.SkyboxDn = 'http://www.roblox.com/asset/?id=196263643'
+				SkyBox.SkyboxRt = 'http://www.roblox.com/asset/?id=196263721'
+				SkyBox.Parent = lightingService
+
+				local Blur = Instance.new('BlurEffect')
+				Blur.Size = 2
+				Blur.Parent = lightingService
+
+				local Efecto = Instance.new('BlurEffect')
+				Efecto.Name = 'Efecto'
+				Efecto.Enabled = false
+				Efecto.Size = 4
+				Efecto.Parent = lightingService
+
+				local Inaritaisha = Instance.new('ColorCorrectionEffect')
+				Inaritaisha.Name = 'Inari taisha'
+				Inaritaisha.Saturation = 0.05
+				Inaritaisha.TintColor = Color3.fromRGB(255, 224, 219)
+				Inaritaisha.Parent = lightingService
+
+				local Normal = Instance.new('ColorCorrectionEffect')
+				Normal.Name = 'Normal'
+				Normal.Enabled = false
+				Normal.Saturation = -0.2
+				Normal.TintColor = Color3.fromRGB(255, 232, 215)
+				Normal.Parent = lightingService
+
+				local SunRays = Instance.new('SunRaysEffect')
+				SunRays.Intensity = 0.05
+				SunRays.Parent = lightingService
+
+				local Sunset = Instance.new('Sky')
+				Sunset.Name = 'Sunset'
+				Sunset.SkyboxUp = 'rbxassetid://323493360'
+				Sunset.SkyboxLf = 'rbxassetid://323494252'
+				Sunset.SkyboxBk = 'rbxassetid://323494035'
+				Sunset.SkyboxFt = 'rbxassetid://323494130'
+				Sunset.SkyboxDn = 'rbxassetid://323494368'
+				Sunset.SunAngularSize = 14
+				Sunset.SkyboxRt = 'rbxassetid://323494067'
+				Sunset.Parent = lightingService
+
+				local Takayama = Instance.new('ColorCorrectionEffect')
+				Takayama.Name = 'Takayama'
+				Takayama.Enabled = false
+				Takayama.Saturation = -0.3
+				Takayama.Contrast = 0.1
+				Takayama.TintColor = Color3.fromRGB(235, 214, 204)
+				Takayama.Parent = lightingService
+
+				lightingService.Brightness = 2.3
+				lightingService.ColorShift_Bottom = Color3.fromRGB(11, 0, 20)
+				lightingService.ColorShift_Top = Color3.fromRGB(240, 127, 14)
+				lightingService.OutdoorAmbient = Color3.fromRGB(34, 0, 49)
+				lightingService.ClockTime = 7.5
+				lightingService.FogColor = Color3.fromRGB(94, 76, 106)
+				lightingService.FogEnd = 300
+				lightingService.FogStart = 0
+				lightingService.ExposureCompensation = 0.24
+				lightingService.ShadowSoftness = 0
+				lightingService.Ambient = Color3.fromRGB(59, 33, 27)
+			else
+				print('shaders disabled')
+				lightingService:ClearAllChildren()
+				
+				for i, v in lightingstuff do
+					lightingService[i] = v
+				end
+
+				for _, child in createdEffects do
+					if child and child.Parent == nil then
+						child.Parent = lightingService
+					end
+				end
+				table.clear(createdEffects)
+				table.clear(lightingstuff)
+			end
+		end,
+		Tooltip = 'im boutta blow'
+	})
+end)
