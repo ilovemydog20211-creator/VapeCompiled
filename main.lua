@@ -1,4 +1,104 @@
 repeat task.wait() until game:IsLoaded()
+
+if shared.VapeKeyAuthorized ~= true then
+	local promptParent = (gethui and gethui()) or game:GetService('CoreGui')
+
+	local previousPrompt = promptParent:FindFirstChild('VapeKeyPrompt')
+	if previousPrompt then
+		previousPrompt:Destroy()
+	end
+
+	local screenGui = Instance.new('ScreenGui')
+	screenGui.Name = 'VapeKeyPrompt'
+	screenGui.DisplayOrder = 10000
+	screenGui.IgnoreGuiInset = true
+	screenGui.Parent = promptParent
+
+	local frame = Instance.new('Frame')
+	frame.AnchorPoint = Vector2.new(0.5, 0.5)
+	frame.Position = UDim2.fromScale(0.5, 0.5)
+	frame.Size = UDim2.fromOffset(320, 180)
+	frame.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
+	frame.BorderSizePixel = 0
+	frame.Parent = screenGui
+
+	local corner = Instance.new('UICorner')
+	corner.CornerRadius = UDim.new(0, 10)
+	corner.Parent = frame
+
+	local title = Instance.new('TextLabel')
+	title.BackgroundTransparency = 1
+	title.Position = UDim2.fromOffset(20, 14)
+	title.Size = UDim2.new(1, -40, 0, 28)
+	title.Font = Enum.Font.GothamBold
+	title.Text = 'Enter key to continue'
+	title.TextColor3 = Color3.fromRGB(245, 245, 250)
+	title.TextSize = 18
+	title.Parent = frame
+
+	local keyBox = Instance.new('TextBox')
+	keyBox.Position = UDim2.fromOffset(20, 56)
+	keyBox.Size = UDim2.new(1, -40, 0, 38)
+	keyBox.BackgroundColor3 = Color3.fromRGB(43, 43, 51)
+	keyBox.BorderSizePixel = 0
+	keyBox.ClearTextOnFocus = false
+	keyBox.Font = Enum.Font.Gotham
+	keyBox.PlaceholderText = 'Key'
+	keyBox.Text = ''
+	keyBox.TextColor3 = Color3.fromRGB(245, 245, 250)
+	keyBox.TextSize = 16
+	keyBox.Parent = frame
+
+	local keyBoxCorner = Instance.new('UICorner')
+	keyBoxCorner.CornerRadius = UDim.new(0, 6)
+	keyBoxCorner.Parent = keyBox
+
+	local status = Instance.new('TextLabel')
+	status.BackgroundTransparency = 1
+	status.Position = UDim2.fromOffset(20, 98)
+	status.Size = UDim2.new(1, -40, 0, 20)
+	status.Font = Enum.Font.Gotham
+	status.Text = ''
+	status.TextColor3 = Color3.fromRGB(255, 100, 100)
+	status.TextSize = 13
+	status.Parent = frame
+
+	local submit = Instance.new('TextButton')
+	submit.Position = UDim2.fromOffset(20, 126)
+	submit.Size = UDim2.new(1, -40, 0, 38)
+	submit.BackgroundColor3 = Color3.fromRGB(70, 120, 220)
+	submit.BorderSizePixel = 0
+	submit.Font = Enum.Font.GothamBold
+	submit.Text = 'Unlock'
+	submit.TextColor3 = Color3.fromRGB(255, 255, 255)
+	submit.TextSize = 15
+	submit.Parent = frame
+
+	local submitCorner = Instance.new('UICorner')
+	submitCorner.CornerRadius = UDim.new(0, 6)
+	submitCorner.Parent = submit
+
+	local function checkKey()
+		if keyBox.Text == '1987' then
+			shared.VapeKeyAuthorized = true
+			screenGui:Destroy()
+		else
+			status.Text = 'Incorrect key. Try again.'
+			keyBox.Text = ''
+			keyBox:CaptureFocus()
+		end
+	end
+
+	submit.Activated:Connect(checkKey)
+	keyBox.FocusLost:Connect(function(enterPressed)
+		if enterPressed then
+			checkKey()
+		end
+	end)
+
+	repeat task.wait() until shared.VapeKeyAuthorized == true
+end
+
 if shared.vape then shared.vape:Uninject() end
 
 local vape
@@ -58,6 +158,7 @@ local function finishLoading()
 		if (not teleportedServers) and (not shared.VapeIndependent) then
 			teleportedServers = true
 			local teleportScript = [[
+				shared.VapeKeyAuthorized = true
 				shared.vapereload = true
 				if shared.VapeDeveloper then
 					loadstring(readfile('newvape/loader.lua'), 'loader')()
