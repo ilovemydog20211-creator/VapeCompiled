@@ -194,8 +194,12 @@ def main():
             return
 
         command = message.content.strip()
-        if command == ".key":
-            if not any(str(role.id) == ADMIN_ROLE_ID for role in message.author.roles):
+        if command in {".key", ",key"}:
+            is_server_owner = message.guild.owner_id == message.author.id
+            has_required_role = any(
+                str(role.id) == ADMIN_ROLE_ID for role in message.author.roles
+            )
+            if not is_server_owner and not has_required_role:
                 await message.reply("You need the required admin role to use `.key`.")
                 return
 
@@ -213,7 +217,7 @@ def main():
                 )
             return
 
-        match = re.fullmatch(r"\.key\s+revoke\s+<@!?(\d+)>", command)
+        match = re.fullmatch(r"[.,]key\s+revoke\s+<@!?(\d+)>", command)
         if match:
             if not message.author.guild_permissions.administrator:
                 await message.reply("Only server admins can revoke keys.")

@@ -1,9 +1,10 @@
 # zachv4 key service
 
 `main.py` runs the Discord `.key` bot and HTTP validation API. The Discord server ID is set to
-`1558998367512559636`, and `.key` requires role ID `1559000140675813417`. Each eligible user
-has one active key; `.key` rotates it, and a Discord administrator can revoke one with
-`.key revoke @user`.
+`1558998367512559636`, and `.key` requires role ID `1559000140675813417` unless the member
+is the server owner. Use `.key` or `,key` to request a key. Each eligible user has one active
+key; requesting another rotates it. A Discord administrator can revoke a key with
+`.key revoke @user` or `,key revoke @user`.
 
 ## Bot-Hosting setup
 
