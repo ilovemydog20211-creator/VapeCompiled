@@ -208,6 +208,13 @@ def main():
     intents.message_content = True
     bot = discord.Client(intents=intents)
 
+    def is_server_admin(message):
+        return (
+            message.guild.owner_id == message.author.id
+            or message.author.guild_permissions.administrator
+            or any(str(role.id) == ADMIN_ROLE_ID for role in message.author.roles)
+        )
+
     async def log_key_use(discord_id):
         guild = bot.get_guild(int(DISCORD_GUILD_ID))
         if guild is None:
@@ -237,13 +244,9 @@ def main():
         if str(message.guild.id) != DISCORD_GUILD_ID:
             return
 
-        command = message.content.strip()
+        command = message.content.strip().lower()
         if command in {".key", ",key"}:
-            is_server_owner = message.guild.owner_id == message.author.id
-            has_required_role = any(
-                str(role.id) == ADMIN_ROLE_ID for role in message.author.roles
-            )
-            if not is_server_owner and not has_required_role:
+            if not is_server_admin(message):
                 await message.reply("You need the required admin role to use `.key`.")
                 return
 
@@ -261,8 +264,8 @@ def main():
                 )
             return
 
-        if command == ".logs":
-            if not message.author.guild_permissions.administrator:
+        if command in {".logs", ",logs"}:
+            if not is_server_admin(message):
                 await message.reply("Only server admins can create the key log channel.")
                 return
             channel = discord.utils.get(
@@ -302,13 +305,9 @@ def main():
             await message.reply(f"Key usage logs are enabled in {channel.mention}.")
             return
 
-        revoke_match = re.fullmatch(
-            r"[.,]revoke\s+(all|<@!?(\d+)>)",
-            command,
-            flags=re.IGNORECASE,
-        )
+        revoke_match = re.fullmatch(r"[.,]revoke\s+(all|<@!?(\d+)>)", command)
         if revoke_match:
-            if not message.author.guild_permissions.administrator:
+            if not is_server_admin(message):
                 await message.reply("Only server admins can revoke keys.")
                 return
 
@@ -325,7 +324,7 @@ def main():
 
         match = re.fullmatch(r"[.,]key\s+revoke\s+<@!?(\d+)>", command)
         if match:
-            if not message.author.guild_permissions.administrator:
+            if not is_server_admin(message):
                 await message.reply("Only server admins can revoke keys.")
                 return
             revoked = key_store.revoke(match.group(1))
@@ -337,6 +336,10 @@ def main():
     @bot.event
     async def on_ready():
         print(f"Bot logged in as {bot.user}")
+        print(
+            "Prefix commands require Message Content Intent enabled both in this "
+            "bot's intents and in the Discord Developer Portal."
+        )
 
     api_server = ThreadingHTTPServer(
         ("0.0.0.0", PORT),
