@@ -13,6 +13,7 @@ import discord
 
 
 DISCORD_GUILD_ID = "1558998367512559636"
+ADMIN_ROLE_ID = "1559000140675813417"
 PORT = int(os.environ.get("PORT") or os.environ.get("SERVER_PORT") or "8787")
 KEY_STORE_PATH = Path(os.environ.get("KEY_STORE_PATH", "./data/keys.json"))
 KEY_PATTERN = re.compile(r"^ZV-[A-Za-z0-9_-]{32}$")
@@ -194,6 +195,10 @@ def main():
 
         command = message.content.strip()
         if command == ".key":
+            if not any(str(role.id) == ADMIN_ROLE_ID for role in message.author.roles):
+                await message.reply("You need the required admin role to use `.key`.")
+                return
+
             key = key_store.issue(message.author.id)
             try:
                 await message.author.send(

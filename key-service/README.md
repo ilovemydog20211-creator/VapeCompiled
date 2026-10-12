@@ -1,8 +1,9 @@
 # zachv4 key service
 
 `main.py` runs the Discord `.key` bot and HTTP validation API. The Discord server ID is set to
-`1558998367512559636`. Each user has one active key; `.key` rotates it, and an administrator
-can revoke one with `.key revoke @user`.
+`1558998367512559636`, and `.key` requires role ID `1545619172023607447`. Each eligible user
+has one active key; `.key` rotates it, and a Discord administrator can revoke one with
+`.key revoke @user`.
 
 ## Bot-Hosting setup
 
@@ -10,7 +11,8 @@ can revoke one with `.key revoke @user`.
 2. Add `DISCORD_BOT_TOKEN` in the host's private environment-variable settings. Use a newly
    reset token and do not put it in source code or chat.
 3. Enable **Message Content Intent** in the Discord Developer Portal. Give the bot permission
-   to read and reply to server messages and send DMs.
+   to read and reply to server messages and send DMs. Assign the required role to users who
+   should be able to generate keys.
 4. The app listens on `PORT`, then `SERVER_PORT`, then `8787`. Configure the host's assigned
    port as `PORT` if it does not provide either variable automatically. Set `KEY_STORE_PATH`
    to a file on persistent storage if the host's working directory is not persistent.
