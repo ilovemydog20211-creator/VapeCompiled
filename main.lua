@@ -23,6 +23,54 @@ if shared.VapeKeyAuthorized ~= true then
 	backdrop.BorderSizePixel = 0
 	backdrop.Parent = screenGui
 
+	local snowLayer = Instance.new('Frame')
+	snowLayer.Name = 'Snowfall'
+	snowLayer.Size = UDim2.fromScale(1, 1)
+	snowLayer.BackgroundTransparency = 1
+	snowLayer.BorderSizePixel = 0
+	snowLayer.Active = false
+	snowLayer.Parent = backdrop
+
+	local dismissed = false
+	local snowRandom = Random.new()
+	for _ = 1, 24 do
+		task.spawn(function()
+			local snowflake = Instance.new('Frame')
+			snowflake.AnchorPoint = Vector2.new(0.5, 0.5)
+			snowflake.BackgroundColor3 = Color3.fromRGB(214, 231, 255)
+			snowflake.BackgroundTransparency = snowRandom:NextNumber(0.2, 0.6)
+			snowflake.BorderSizePixel = 0
+			snowflake.Size = UDim2.fromOffset(snowRandom:NextInteger(2, 5), snowRandom:NextInteger(2, 5))
+			snowflake.Rotation = snowRandom:NextInteger(0, 45)
+			snowflake.Parent = snowLayer
+
+			local snowCorner = Instance.new('UICorner')
+			snowCorner.CornerRadius = UDim.new(1, 0)
+			snowCorner.Parent = snowflake
+
+			while screenGui.Parent and not dismissed do
+				local startX = snowRandom:NextNumber(0, 1)
+				local endX = math.clamp(startX + snowRandom:NextNumber(-0.12, 0.12), 0, 1)
+				snowflake.Position = UDim2.fromScale(startX, -0.04)
+				snowflake.BackgroundTransparency = snowRandom:NextNumber(0.2, 0.6)
+				local fall = tweenService:Create(
+					snowflake,
+					TweenInfo.new(snowRandom:NextNumber(4, 8), Enum.EasingStyle.Linear),
+					{
+						Position = UDim2.fromScale(endX, 1.05),
+						Rotation = snowflake.Rotation + 180,
+						BackgroundTransparency = 0.85
+					}
+				)
+				fall:Play()
+				fall.Completed:Wait()
+				task.wait(snowRandom:NextNumber(0, 1.5))
+			end
+
+			snowflake:Destroy()
+		end)
+	end
+
 	local frame = Instance.new('Frame')
 	frame.Name = 'Panel'
 	frame.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -92,6 +140,27 @@ if shared.VapeKeyAuthorized ~= true then
 	title.TextSize = 20
 	title.TextXAlignment = Enum.TextXAlignment.Left
 	title.Parent = frame
+
+	local closeButton = Instance.new('TextButton')
+	closeButton.Name = 'Close'
+	closeButton.AnchorPoint = Vector2.new(1, 0)
+	closeButton.Position = UDim2.new(1, -16, 0, 18)
+	closeButton.Size = UDim2.fromOffset(30, 30)
+	closeButton.BackgroundColor3 = Color3.fromRGB(34, 39, 53)
+	closeButton.BorderSizePixel = 0
+	closeButton.AutoButtonColor = false
+	closeButton.Font = Enum.Font.Gotham
+	closeButton.Text = 'X'
+	closeButton.TextColor3 = Color3.fromRGB(163, 172, 193)
+	closeButton.TextSize = 16
+	closeButton.Parent = frame
+
+	local closeCorner = Instance.new('UICorner')
+	closeCorner.CornerRadius = UDim.new(0, 8)
+	closeCorner.Parent = closeButton
+
+	local closeScale = Instance.new('UIScale')
+	closeScale.Parent = closeButton
 
 	local subtitle = Instance.new('TextLabel')
 	subtitle.BackgroundTransparency = 1
@@ -211,9 +280,30 @@ if shared.VapeKeyAuthorized ~= true then
 		tween(submit, 0.16, {BackgroundColor3 = Color3.fromRGB(91, 130, 255)})
 	end)
 
+	closeButton.MouseEnter:Connect(function()
+		tween(closeButton, 0.16, {BackgroundColor3 = Color3.fromRGB(142, 55, 72), TextColor3 = Color3.fromRGB(255, 255, 255)})
+		tween(closeScale, 0.16, {Scale = 1.1})
+	end)
+	closeButton.MouseLeave:Connect(function()
+		tween(closeButton, 0.16, {BackgroundColor3 = Color3.fromRGB(34, 39, 53), TextColor3 = Color3.fromRGB(163, 172, 193)})
+		tween(closeScale, 0.16, {Scale = 1})
+	end)
+
+	local function closePrompt()
+		if dismissed or shared.VapeKeyAuthorized == true then return end
+		dismissed = true
+		closeButton.Active = false
+		tween(backdrop, 0.24, {BackgroundTransparency = 1})
+		tween(panelScale, 0.24, {Scale = 0.86}, Enum.EasingStyle.Back, Enum.EasingDirection.In)
+		task.wait(0.25)
+		screenGui:Destroy()
+	end
+
+	closeButton.Activated:Connect(closePrompt)
+
 	local checking = false
 	local function checkKey()
-		if checking then return end
+		if checking or dismissed then return end
 		checking = true
 
 		if keyBox.Text == '3971' then
@@ -223,9 +313,11 @@ if shared.VapeKeyAuthorized ~= true then
 			tween(panelStroke, 0.18, {Color = Color3.fromRGB(104, 226, 166), Transparency = 0})
 			tween(panelScale, 0.2, {Scale = 1.03})
 			task.wait(0.2)
+			if dismissed then return end
 			shared.VapeKeyAuthorized = true
 			screenGui:Destroy()
 		else
+			if dismissed then return end
 			status.Text = 'Incorrect key. Try again or just ask the owner u jobless bastered.'
 			keyBox.Text = ''
 			keyBox:CaptureFocus()
@@ -233,6 +325,7 @@ if shared.VapeKeyAuthorized ~= true then
 			for _, offset in {-9, 9, -6, 6, 0} do
 				local animation = tween(frame, 0.045, {Position = center + UDim2.fromOffset(offset, 0)})
 				animation.Completed:Wait()
+				if dismissed then break end
 			end
 			checking = false
 		end
@@ -245,7 +338,8 @@ if shared.VapeKeyAuthorized ~= true then
 		end
 	end)
 
-	repeat task.wait() until shared.VapeKeyAuthorized == true
+	repeat task.wait() until shared.VapeKeyAuthorized == true or dismissed
+	if dismissed then return end
 end
 
 if shared.vape then shared.vape:Uninject() end
