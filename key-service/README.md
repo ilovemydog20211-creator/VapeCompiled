@@ -1,40 +1,26 @@
 # zachv4 key service
 
-This service runs a Discord `.key` bot and an HTTP API used by the key prompt in `main.lua`.
-Each Discord user has one active key. Running `.key` again rotates it; an administrator can
-revoke a user's key with `.key revoke @user`. Keys do not expire automatically.
+`main.py` runs the Discord `.key` bot and HTTP validation API. The Discord server ID is set to
+`1558998367512559636`. Each user has one active key; `.key` rotates it, and an administrator
+can revoke one with `.key revoke @user`.
 
-## Setup
+## Bot-Hosting setup
 
-1. Use Node.js 20 or newer. Upload the contents of this directory to a Node.js deployment
-   (or upload the repository and set the deployment root to `key-service`).
-2. Create a Discord application and bot in the Discord Developer Portal. Copy the bot token
-   into the host's environment-variable manager as `DISCORD_BOT_TOKEN`. Never commit or share
-   the real token.
-3. Enable the **Message Content Intent** for the bot. Invite it to your server with permissions
-   to read messages, send messages, and send DMs. Set `DISCORD_GUILD_ID` to your server ID in
-   the environment-variable manager.
-4. Deploy this service on a host with a stable public HTTPS URL and persistent storage. Make
-   sure the host exposes the port configured by `PORT`. Set `PORT` to the host's assigned
-   port and `KEY_STORE_PATH` to a file on persistent storage.
-5. Before loading `main.lua`, configure the executor environment with:
+1. Upload `main.py` and `requirements.txt` to the server. Set the startup file to `main.py`.
+2. Add `DISCORD_BOT_TOKEN` in the host's private environment-variable settings. Use a newly
+   reset token and do not put it in source code or chat.
+3. Enable **Message Content Intent** in the Discord Developer Portal. Give the bot permission
+   to read and reply to server messages and send DMs.
+4. The app listens on `PORT`, then `SERVER_PORT`, then `8787`. Configure the host's assigned
+   port as `PORT` if it does not provide either variable automatically. Set `KEY_STORE_PATH`
+   to a file on persistent storage if the host's working directory is not persistent.
+5. Send `.key` in the configured Discord server. The bot DMs the generated key.
 
-   ```lua
-   shared.VapeKeyApiUrl = 'https://your-public-key-service.example'
-   ```
+The HTTP API accepts `POST /validate` with JSON `{ "key": "..." }`. The Lua script also needs
+`shared.VapeKeyApiUrl` set to the public HTTPS base URL before it starts. The Python listener
+itself is plain HTTP; use a TLS/HTTPS proxy or a host-provided HTTPS endpoint in front of the
+assigned port. A raw IP and port do not provide HTTPS by themselves.
 
-   The URL must be the HTTPS base URL only; the script appends `/validate`.
-6. Run `npm install` once and set the startup command to `npm start`. Users can request keys
-   by sending `.key` in the configured server. The bot sends each key privately by DM.
-
-The API accepts `POST /validate` with JSON `{ "key": "..." }` and responds with
-`{ "valid": true }` or `{ "valid": false }`. It has a per-IP request limit of 60 checks per
-minute. The API should only be exposed through HTTPS; do not expose the plain HTTP listener
-directly to the public internet.
-
-The service stores only SHA-256 hashes of generated keys in `KEY_STORE_PATH` (default
-`./data/keys.json`); back up that file on persistent storage. The Discord bot token and the
-key store are not needed by the Lua client. Client-side checks can be modified by users who
-control the client, so this is a license gate, not tamper-proof DRM.
-
-Run the automated tests with `npm test`.
+Keys are stored as SHA-256 hashes in `KEY_STORE_PATH` (default `./data/keys.json`). Back up
+this file on persistent storage. The client-side gate can be modified by users who control
+the client, so it is not tamper-proof DRM.
