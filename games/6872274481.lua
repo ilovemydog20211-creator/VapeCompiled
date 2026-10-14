@@ -34721,3 +34721,179 @@ run(function()
 		Tooltip = 'Rose Ambience'
 	})
 end)
+run(function()
+	local AutoShoot
+	local ShootTargets
+	local ShootList
+	local ShootRange
+	local SwitchDelay
+	local ShootDelay
+	local busy = false
+	local readyAt = {}
+
+	local function getControllers()
+		return (bedwars.KnitClient and bedwars.KnitClient.Controllers) or (bedwars.Knit and bedwars.Knit.Controllers) or {}
+	end
+
+	local function findSourceController(handItem)
+		for _, ctrl in getControllers() do
+			if type(ctrl) == 'table' and type(ctrl.beginHolding) == 'function' and type(ctrl.releaseChargeInput) == 'function' and type(ctrl.isRelevantItem) == 'function' then
+				local ok, relevant = pcall(ctrl.isRelevantItem, ctrl, handItem)
+				if ok and relevant then
+					return ctrl
+				end
+			end
+		end
+	end
+
+	local function projectileName(item)
+		local meta = bedwars.ItemMeta[item.itemType]
+		local source = meta and meta.projectileSource
+		if not source or type(source.projectileType) ~= 'function' then return nil end
+		local ammo
+		if source.ammoItemTypes then
+			for _, ammoType in source.ammoItemTypes do
+				for _, inv in store.inventory.inventory.items do
+					if inv.itemType == ammoType then
+						ammo = ammoType
+						break
+					end
+				end
+				if ammo then break end
+			end
+			if not ammo then return nil end
+		end
+		local ok, name = pcall(source.projectileType, ammo or item.itemType)
+		return ok and name or nil, source
+	end
+
+	local function allowed(name)
+		for _, entry in (ShootList.ListEnabled or ShootList.List or {}) do
+			if entry ~= '' and name:lower():find(entry:lower(), 1, true) then
+				return true
+			end
+		end
+		return false
+	end
+
+	local function findProjectileSlot()
+		for i, slot in (store.inventory.hotbar or {}) do
+			local item = slot and slot.item
+			if item and item.itemType and item.tool and tick() >= (readyAt[item.itemType] or 0) then
+				local name, source = projectileName(item)
+				if name and allowed(name) then
+					return i - 1, item, source
+				end
+			end
+		end
+	end
+
+	local function selectSlot(slot)
+		if store.inventory.hotbarSlot == slot then return true end
+		bedwars.Store:dispatch({
+			type = 'InventorySelectHotbarSlot',
+			slot = slot
+		})
+		local start = tick()
+		repeat
+			task.wait()
+		until store.inventory.hotbarSlot == slot or tick() - start > 0.4
+		return store.inventory.hotbarSlot == slot
+	end
+
+	local function shoot()
+		local slot, item, source = findProjectileSlot()
+		if not slot then return end
+		busy = true
+		store.autoShooting = true
+		local previous = store.inventory.hotbarSlot
+		local ok = pcall(function()
+			if not selectSlot(slot) then return end
+			local start = tick()
+			local hand
+			repeat
+				task.wait()
+				hand = store.hand
+			until (hand and hand.tool == item.tool) or tick() - start > 0.5
+			local ctrl = findSourceController(item)
+			if not ctrl then return end
+			ctrl:beginHolding(item, nil, ctrl.aimingMaid, false)
+			task.wait(ShootDelay.Value)
+			if AutoShoot.Enabled and store.inventory.hotbarSlot == slot then
+				ctrl:releaseChargeInput(ctrl.aimingMaid, function()
+					return true
+				end, nil)
+				readyAt[item.itemType] = tick() + (tonumber(source and source.fireDelaySec) or 0.5) + 0.05
+			end
+			task.wait(SwitchDelay.Value)
+		end)
+		if previous and store.inventory.hotbarSlot ~= previous then
+			pcall(selectSlot, previous)
+		end
+		store.autoShooting = false
+		busy = false
+		return ok
+	end
+
+	AutoShoot = vape.Categories.Blatant:CreateModule({
+		Name = 'AutoShoot',
+		Function = function(callback)
+			if callback then
+				repeat
+					if not busy and entitylib.isAlive then
+						local target = entitylib.EntityPosition({
+							Range = ShootRange.Value,
+							Part = 'RootPart',
+							Wallcheck = ShootTargets.Walls.Enabled or nil,
+							Players = ShootTargets.Players.Enabled,
+							NPCs = ShootTargets.NPCs.Enabled
+						})
+						if target then
+							task.spawn(shoot)
+						end
+					end
+					task.wait(0.05)
+				until not AutoShoot.Enabled
+			else
+				store.autoShooting = false
+			end
+		end,
+		Tooltip = 'switches to ur bow and shoots for u when someone is in range, works on mobile too'
+	})
+	ShootTargets = AutoShoot:CreateTargets({
+		Players = true,
+		NPCs = false
+	})
+	ShootList = AutoShoot:CreateTextList({
+		Name = 'Projectiles',
+		Default = {'arrow'},
+		Placeholder = 'projectile name'
+	})
+	ShootRange = AutoShoot:CreateSlider({
+		Name = 'Range',
+		Min = 5,
+		Max = 100,
+		Default = 50,
+		Suffix = function(val)
+			return val == 1 and 'stud' or 'studs'
+		end
+	})
+	SwitchDelay = AutoShoot:CreateSlider({
+		Name = 'Switch delay',
+		Min = 0,
+		Max = 1,
+		Default = 0.1,
+		Decimal = 100,
+		Suffix = 's',
+		Tooltip = 'how long it waits after shooting before switching back'
+	})
+	ShootDelay = AutoShoot:CreateSlider({
+		Name = 'Shoot delay',
+		Min = 0,
+		Max = 2,
+		Default = 0.4,
+		Decimal = 100,
+		Suffix = 's',
+		Tooltip = 'how long it waits after switching before shooting (higher = more charge)'
+	})
+end)
