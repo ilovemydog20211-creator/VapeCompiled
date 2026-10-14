@@ -27826,11 +27826,11 @@ run(function()
 					WaveSize = Terrain.WaterWaveSize,
 					Transparency = Terrain.WaterTransparency
 				}
-				Terrain.WaterColor = Color3.fromRGB(20, 76, 91)
-				Terrain.WaterReflectance = 0.16
-				Terrain.WaterWaveSpeed = 7
-				Terrain.WaterWaveSize = 0.18
-				Terrain.WaterTransparency = 0.24
+				Terrain.WaterColor = Color3.fromRGB(18, 58, 116)
+				Terrain.WaterReflectance = 0.22
+				Terrain.WaterWaveSpeed = 8
+				Terrain.WaterWaveSize = 0.22
+				Terrain.WaterTransparency = 0.16
 
 				oldLightingSettings = {
 					Diffuse = Lighting.EnvironmentDiffuseScale,
@@ -27855,11 +27855,11 @@ run(function()
 						Offset = oceanAtmosphere.Offset
 					}
 				end
-				oceanAtmosphere.Color = Color3.fromRGB(199, 218, 226)
-				oceanAtmosphere.Decay = Color3.fromRGB(105, 132, 151)
-				oceanAtmosphere.Density = 0.18
-				oceanAtmosphere.Glare = 0.12
-				oceanAtmosphere.Haze = 1.1
+				oceanAtmosphere.Color = Color3.fromRGB(190, 213, 238)
+				oceanAtmosphere.Decay = Color3.fromRGB(82, 119, 174)
+				oceanAtmosphere.Density = 0.14
+				oceanAtmosphere.Glare = 0.18
+				oceanAtmosphere.Haze = 0.8
 				oceanAtmosphere.Offset = 0.05
 
 				local map = getMap()
