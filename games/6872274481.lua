@@ -8533,7 +8533,7 @@ run(function()
 		return true
 	end
 
-	local strike = {nextAt = 0, interval = nil, cooldown = 0.3, lastSrv = 0, used = 0, frame = 1 / 60, minr = 0.982, ratio = 0.955, log = {}, good = 0, total = 0, since = 0, anchor = nil, gapr = 0.955, pend = nil, cdel = nil, up = nil, cdHigh = nil}
+	local strike = {nextAt = 0, interval = nil, cooldown = 0.3, lastSrv = 0, used = 0, frame = 1 / 60, minr = 0.982, ratio = 0.98, log = {}, good = 0, total = 0, since = 0, anchor = nil, gapr = 0.955, pend = nil, cdel = nil, up = nil, cdHigh = nil}
 	local weaponSpacing = {[0.21] = 0.229, [0.25] = 0.249, [0.35] = 0.345, [0.4] = 0.341, [0.6] = 0.63}
 	local SELF_LAG, SELF_LAG_LOW, SELF_LAG_HIGH = 0.09, 0.07, 0.11
 	local TARGET_LAG, CLAIM_LAG, LAG_CAP = 0.12, 0.05, 8
@@ -8676,7 +8676,7 @@ run(function()
 		end)
 		pcall(writefile, 'aerov4/rangedump.txt', table.concat(rangeDump.rows, '\n'))
 	end
-	local HIGH_SPACING = 0.285
+	local HIGH_SPACING = 0.295
 	local function hitSpacing()
 		local fury = strike.fury or 1
 		local base = strike.baseSpeed or 0.3
@@ -8721,7 +8721,7 @@ run(function()
 		strike.since += 1
 		if strike.total < 16 or strike.since < 4 then return end
 		strike.since = 0
-		strike.ratio = 0.955
+		strike.ratio = 0.98
 		strike.good *= 0.5
 		strike.total *= 0.5
 	end
@@ -8836,7 +8836,7 @@ run(function()
 				strike.anchor, strike.pend = nil, nil
 				strike.dueAt, strike.lastSent, strike.guardAt = 0, 0, 0
 				strike.gridClock = 0
-				strike.ratio = 0.955
+				strike.ratio = 0.98
 				strike.ghostDelay = nil
 				strike.cdel = nil
 				strike.cdHigh = nil
