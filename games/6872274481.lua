@@ -6712,6 +6712,7 @@ run(function()
 	local SwingTimeSlider
 	local AirHit
 	local AirHitsChance
+	local isDelta = identifyexecutor and ({identifyexecutor()})[1] == 'Delta' or false
 	local FastHits
 	local LegitSwitch
 	local Kits
@@ -8264,6 +8265,7 @@ run(function()
 	end
 
 	local function doFastHits()
+		if isDelta then return end
 		if not FastHits or not FastHits.Enabled then return end
 		if not Killaura or not Killaura.Enabled then return end
 		if not entitylib.isAlive then return end
@@ -8346,6 +8348,7 @@ run(function()
 	end
 
 	local function startAutoShootLoop()
+		if isDelta then return end
 		if autoShootLoop then return end
 
 		if not ProjectileDelay then
@@ -8768,11 +8771,11 @@ run(function()
 				end
 
 				setSwingBuffer(true)
-				if FastHits.Enabled then
+				if not isDelta and FastHits.Enabled then
 					startAutoShootLoop()
 				end
 
-				if Animation.Enabled and not (identifyexecutor and table.find({'Argon', 'Delta'}, ({identifyexecutor()})[1])) then
+				if Animation.Enabled and not (identifyexecutor and table.find({'Argon'}, ({identifyexecutor()})[1])) then
 					swapViewmodel(true)
 					task.spawn(function()
 						local going = false
@@ -9464,8 +9467,18 @@ run(function()
 	FastHits = Killaura:CreateToggle({
 		Name = 'fast hits',
 		Default = false,
+		Visible = not isDelta,
 		Tooltip = 'shoots ur projectiles between sword hits so nothin ghosts',
 		Function = function(call)
+			if isDelta and call then
+				task.defer(function()
+					if FastHits.Enabled then
+						FastHits:Toggle()
+					end
+				end)
+				return
+			end
+
 			if FastHitsAutoCharge then
 				FastHitsAutoCharge.Object.Visible = call
 			end
@@ -9614,7 +9627,7 @@ run(function()
 	})
 
 	task.defer(function()
-		local on = FastHits.Enabled
+		local on = not isDelta and FastHits.Enabled
 
 		FastHitsAutoCharge.Object.Visible = on
 		ArrowCharge.Object.Visible = on and FastHitsAutoCharge.Enabled
