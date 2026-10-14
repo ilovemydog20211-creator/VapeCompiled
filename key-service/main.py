@@ -287,12 +287,14 @@ def make_api_handler(key_store, on_key_validation=None):
                 return
 
             if on_key_validation:
-                on_key_validation(
-                    owner_id,
-                    payload["robloxUserId"],
-                    result,
-                    expires_at,
-                )
+                heartbeat = payload.get("heartbeat") is True
+                if result != "valid" or not heartbeat:
+                    on_key_validation(
+                        owner_id,
+                        payload["robloxUserId"],
+                        result,
+                        expires_at,
+                    )
             self._send_json(
                 200,
                 {
@@ -393,6 +395,7 @@ def main():
                 "(default: 30 days; 1 minute to 1 month)\n"
                 "`.key revoke @user` — revoke one user's key\n"
                 "`.revoke @user` or `.revoke all` — revoke keys\n"
+                "`.kick @user` — revoke their key and kick a running client\n"
                 "`.logs` — create or secure the private key audit channel\n\n"
                 "Durations: `1m`, `1h`, `7d`, `1w`, or `1 month`.\n"
                 "Key issuance and revocation require the configured admin role "
@@ -442,6 +445,28 @@ def main():
                         reason="Secure the key usage log channel",
                     )
             await message.reply(f"Key usage logs are enabled in {channel.mention}.")
+            return
+
+        kick_match = re.fullmatch(r"[.,]kick\s+<@!?(\d+)>", command)
+        if kick_match:
+            if not is_server_admin(message):
+                await message.reply("Only server admins can use `.kick`.")
+                return
+
+            target_id = kick_match.group(1)
+            revoked = key_store.revoke(target_id)
+            if revoked:
+                await message.reply(
+                    "That user's key was revoked. A running script will kick "
+                    "its Roblox client on its next key check."
+                )
+            else:
+                await message.reply("That user has no active key to revoke.")
+            await log_key_event(
+                "key_kick_requested" if revoked else "key_kick_not_found",
+                actor_id=message.author.id,
+                target_id=target_id,
+            )
             return
 
         revoke_match = re.fullmatch(r"[.,]revoke\s+(all|<@!?(\d+)>)", command)

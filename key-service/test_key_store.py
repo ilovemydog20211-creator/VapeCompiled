@@ -39,6 +39,19 @@ class KeyStoreTests(unittest.TestCase):
             (None, "invalid", None),
         )
 
+    def test_revoked_key_fails_the_next_client_validation(self):
+        key, _ = self.store.issue("123456789012345678")
+        self.assertEqual(
+            self.store.validate_for_roblox_user(key, 12345)[1],
+            "valid",
+        )
+
+        self.assertTrue(self.store.revoke("123456789012345678"))
+        self.assertEqual(
+            self.store.validate_for_roblox_user(key, 12345),
+            (None, "invalid", None),
+        )
+
     def test_expired_keys_are_rejected_without_binding(self):
         key, _ = self.store.issue("123456789012345678")
         records = json.loads(self.path.read_text(encoding="utf-8"))

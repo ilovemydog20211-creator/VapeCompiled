@@ -303,7 +303,7 @@ if shared.VapeKeyAuthorized ~= true then
 	closeButton.Activated:Connect(closePrompt)
 
 	local checking = false
-	local function validateAccessKey(key)
+	local function validateAccessKey(key, heartbeat)
 		local apiUrl = shared.VapeKeyApiUrl or 'http://fi16.bot-hosting.cloud:26061'
 
 		local httpRequest = request or http_request or (syn and syn.request)
@@ -318,7 +318,8 @@ if shared.VapeKeyAuthorized ~= true then
 			Headers = {['Content-Type'] = 'application/json'},
 			Body = httpService:JSONEncode({
 				key = key,
-				robloxUserId = game:GetService('Players').LocalPlayer.UserId
+				robloxUserId = game:GetService('Players').LocalPlayer.UserId,
+				heartbeat = heartbeat == true
 			})
 		})
 		if not success then
@@ -349,9 +350,12 @@ if shared.VapeKeyAuthorized ~= true then
 			return false, 'This key is locked to another Roblox account.'
 		end
 		if payload.reason == 'expired' then
-			return false, 'This key has expired. Ask an admin for a new one.'
+			return false, 'This key has expired. Ask an admin for a new one.', true
 		end
-		return false, 'Invalid or revoked key.'
+		if payload.reason == 'invalid' then
+			return false, 'This key is no longer active.', true
+		end
+		return false, 'Invalid or revoked key.', true
 	end
 
 	local function checkKey()
@@ -377,6 +381,7 @@ if shared.VapeKeyAuthorized ~= true then
 			task.wait(0.2)
 			if dismissed then return end
 			shared.VapeKeyAuthorized = true
+			shared.VapeAccessKey = keyBox.Text:match('^%s*(.-)%s*$')
 			screenGui:Destroy()
 		else
 			status.TextColor3 = Color3.fromRGB(255, 100, 100)
@@ -404,6 +409,29 @@ if shared.VapeKeyAuthorized ~= true then
 
 	repeat task.wait() until shared.VapeKeyAuthorized == true or dismissed
 	if dismissed then return end
+
+	if shared.VapeAccessKey then
+		task.spawn(function()
+			while shared.VapeKeyAuthorized == true do
+				task.wait(30)
+				if shared.VapeKeyAuthorized ~= true then return end
+
+				local valid, message, revoked = validateAccessKey(
+					shared.VapeAccessKey,
+					true
+				)
+				if not valid and revoked then
+					shared.VapeKeyAuthorized = false
+					game:GetService('Players').LocalPlayer:Kick(
+						'Your script access was revoked.'
+					)
+					return
+				elseif not valid then
+					warn('Could not check script access: '..message)
+				end
+			end
+		end)
+	end
 end
 
 if shared.vape then shared.vape:Uninject() end

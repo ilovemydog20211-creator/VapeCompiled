@@ -10,6 +10,8 @@
 - `.key [@user] [duration]` issues a key by DM. Without a mention it issues a key to
   the command author. The default duration is 30 days.
 - `.key revoke @user`, `.revoke @user`, and `.revoke all` revoke keys.
+- `.kick @user` revokes that user's key. An already-running script checks every 30
+  seconds and kicks its own Roblox client after the service confirms the revocation.
 - `.logs` creates or secures the private `#key-usage-logs` channel.
 
 The previous `/antiraid` and `/antilink` moderation slash commands have been removed.
@@ -25,6 +27,10 @@ first Roblox user ID that successfully validates it; attempts from another ID ar
 rejected. Validation and key lifecycle events include the Discord IDs, Roblox user
 ID when provided, result, event time, and expiry in the audit log. The key itself is
 never written to the logs.
+
+The `.kick` command cannot kick another player from a Roblox server. It only causes
+the client running this script to kick itself after its next successful API check.
+Network outages delay that check; an unreachable service does not trigger a kick.
 
 ## Bot-Hosting setup
 
