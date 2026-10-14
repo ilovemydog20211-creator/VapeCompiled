@@ -25,9 +25,11 @@ Discord user replaces their previous key.
 Keys expire at their stored UTC expiry timestamp and are rejected immediately after
 that time, including after a service restart. A key becomes permanently bound to the
 first Roblox user ID that successfully validates it; attempts from another ID are
-rejected. Validation and key lifecycle events include the Discord IDs, Roblox user
-ID when provided, result, event time, and expiry in the audit log. The key itself is
-never written to the logs.
+rejected. Audit entries use colored embeds and include the actor, key owner, result,
+event time, and expiry. When a Roblox user ID is known, the audit entry includes a
+direct profile link. Individual revocations mention the affected Discord user in
+the command response; their audit entry identifies them in the restricted log
+channel. The key itself is never written to the logs.
 
 The `.kick` command cannot kick another player from a Roblox server. It only causes
 the client running this script to kick itself after its next successful API check.

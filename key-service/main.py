@@ -183,23 +183,30 @@ class KeyStore:
         return None, "invalid", None
 
     def revoke(self, discord_id):
+        return self.revoke_with_details(discord_id) is not None
+
+    def revoke_with_details(self, discord_id):
         discord_id = str(discord_id)
         with self.lock:
-            if discord_id not in self.users:
-                return False
+            record = self.users.get(discord_id)
+            if record is None:
+                return None
             updated_users = dict(self.users)
             del updated_users[discord_id]
             self._save(updated_users)
             self.users = updated_users
-            return True
+            return dict(record)
 
     def revoke_all(self):
+        return len(self.revoke_all_with_details())
+
+    def revoke_all_with_details(self):
         with self.lock:
-            count = len(self.users)
-            if count:
+            records = [dict(record) for record in self.users.values()]
+            if records:
                 self._save({})
                 self.users = {}
-            return count
+            return records
 
 
 def make_api_handler(key_store, on_key_validation=None):
@@ -336,26 +343,90 @@ def main():
     def is_server_admin(message):
         return is_member_admin(message.author, message.guild)
 
-    async def log_key_event(event, **details):
+    async def log_key_event(event, notify_user_id=None, **details):
         guild = bot.get_guild(int(DISCORD_GUILD_ID))
         if guild is None:
             raise RuntimeError("Configured Discord server is not available")
         channel = discord.utils.get(guild.text_channels, name="key-usage-logs")
-        timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        fields = [f"event={event}", f"timestamp={timestamp}"]
-        fields.extend(
-            f"{name}={value}"
-            for name, value in details.items()
-            if value is not None
+        titles = {
+            "key_validated": ("Key validated", discord.Color.green()),
+            "key_issued": ("Key issued", discord.Color.blurple()),
+            "key_delivery_failed": ("Key delivery failed", discord.Color.orange()),
+            "key_revoked": ("Key revoked", discord.Color.red()),
+            "key_revoke_not_found": ("Key revocation failed", discord.Color.orange()),
+            "key_kick_requested": ("Access revoked", discord.Color.red()),
+            "key_kick_not_found": ("Access revocation failed", discord.Color.orange()),
+            "all_keys_deleted": ("All keys deleted", discord.Color.dark_red()),
+            "keys_revoked": ("Keys revoked", discord.Color.dark_red()),
+        }
+        title, color = titles.get(
+            event,
+            ("Key service event", discord.Color.light_grey()),
         )
-        entry = "`" + " | ".join(fields) + "`"
+        embed = discord.Embed(
+            title=title,
+            color=color,
+            timestamp=datetime.now(timezone.utc),
+        )
+        field_labels = {
+            "actor_id": "Action by",
+            "target_id": "Discord user",
+            "discord_id": "Key owner",
+            "roblox_user_id": "Roblox account",
+            "result": "Result",
+            "expires_at": "Expires (UTC)",
+            "duration": "Duration",
+            "count": "Keys affected",
+        }
+        affected_records = details.pop("affected_records", [])
+        for name, value in details.items():
+            if value is None:
+                continue
+            if name in {"actor_id", "target_id", "discord_id"}:
+                value = f"<@{value}>"
+            elif name == "roblox_user_id":
+                value = (
+                    f"[View Roblox profile](https://www.roblox.com/users/"
+                    f"{value}/profile) (`{value}`)"
+                )
+            elif name == "expires_at":
+                try:
+                    value = f"<t:{int(parse_timestamp(value).timestamp())}:F>"
+                except (TypeError, ValueError):
+                    value = str(value)
+            embed.add_field(
+                name=field_labels.get(name, name.replace("_", " ").title()),
+                value=str(value),
+                inline=name not in {"roblox_user_id"},
+            )
+        for record in affected_records[:20]:
+            roblox_user_id = record.get("robloxUserId")
+            affected = f"<@{record['discordId']}>"
+            if roblox_user_id:
+                affected += (
+                    f"\n[Roblox profile](https://www.roblox.com/users/"
+                    f"{roblox_user_id}/profile)"
+                )
+            embed.add_field(name="Deleted key", value=affected, inline=True)
+        if len(affected_records) > 20:
+            embed.add_field(
+                name="Additional keys",
+                value=f"{len(affected_records) - 20} more affected",
+                inline=True,
+            )
+        embed.set_footer(text="VapeCompiled Key Audit")
         if channel is None:
-            print(f"Key audit event (no #key-usage-logs channel): {entry}")
+            print(f"Key audit event (no #key-usage-logs channel): {event} {details}")
             return
         try:
             await channel.send(
-                entry,
-                allowed_mentions=discord.AllowedMentions.none(),
+                content=f"<@{notify_user_id}>" if notify_user_id else None,
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(
+                    users=[discord.Object(id=int(notify_user_id))]
+                    if notify_user_id
+                    else [],
+                ),
             )
         except discord.HTTPException as error:
             print(f"Could not write key audit event: {error}")
@@ -455,18 +526,23 @@ def main():
                 return
 
             target_id = kick_match.group(1)
-            revoked = key_store.revoke(target_id)
-            if revoked:
+            record = key_store.revoke_with_details(target_id)
+            if record:
                 await message.reply(
-                    "That user's key was revoked. A running script will kick "
-                    "its Roblox client on its next key check."
+                    f"<@{target_id}>’s key was revoked. A running script will "
+                    "kick its Roblox client on its next key check.",
+                    allowed_mentions=discord.AllowedMentions(
+                        users=[discord.Object(id=int(target_id))]
+                    ),
                 )
             else:
                 await message.reply("That user has no active key to revoke.")
             await log_key_event(
-                "key_kick_requested" if revoked else "key_kick_not_found",
+                "key_kick_requested" if record else "key_kick_not_found",
                 actor_id=message.author.id,
                 target_id=target_id,
+                roblox_user_id=record.get("robloxUserId") if record else None,
+                notify_user_id=target_id if record else None,
             )
             return
 
@@ -484,12 +560,14 @@ def main():
             if delete_all_match or (
                 revoke_match and revoke_match.group(1) == "all"
             ):
-                count = key_store.revoke_all()
+                records = key_store.revoke_all_with_details()
+                count = len(records)
                 await message.reply(f"Deleted all {count} active key(s).")
                 await log_key_event(
                     "all_keys_deleted",
                     actor_id=message.author.id,
                     count=count,
+                    affected_records=records,
                 )
             else:
                 target_id = (
@@ -497,15 +575,21 @@ def main():
                     if key_revoke_match
                     else revoke_match.group(2)
                 )
-                revoked = key_store.revoke(target_id)
+                record = key_store.revoke_with_details(target_id)
                 await message.reply(
-                    "That user's key has been revoked."
-                    if revoked else "That user has no active key."
+                    f"<@{target_id}>’s key has been revoked."
+                    if record else "That user has no active key.",
+                    allowed_mentions=discord.AllowedMentions(
+                        users=[discord.Object(id=int(target_id))]
+                        if record else [],
+                    ),
                 )
                 await log_key_event(
-                    "key_revoked" if revoked else "key_revoke_not_found",
+                    "key_revoked" if record else "key_revoke_not_found",
                     actor_id=message.author.id,
                     target_id=target_id,
+                    roblox_user_id=record.get("robloxUserId") if record else None,
+                    notify_user_id=target_id if record else None,
                 )
             return
 

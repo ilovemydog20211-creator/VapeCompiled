@@ -46,11 +46,24 @@ class KeyStoreTests(unittest.TestCase):
             "valid",
         )
 
-        self.assertTrue(self.store.revoke("123456789012345678"))
+        record = self.store.revoke_with_details("123456789012345678")
+        self.assertEqual(record["robloxUserId"], "12345")
         self.assertEqual(
             self.store.validate_for_roblox_user(key, 12345),
             (None, "invalid", None),
         )
+
+    def test_bulk_revoke_returns_records_for_audit_logging(self):
+        self.store.issue("123456789012345678")
+        self.store.issue("223456789012345678")
+
+        records = self.store.revoke_all_with_details()
+
+        self.assertEqual(
+            {record["discordId"] for record in records},
+            {"123456789012345678", "223456789012345678"},
+        )
+        self.assertEqual(self.store.revoke_all(), 0)
 
     def test_expired_keys_are_rejected_without_binding(self):
         key, _ = self.store.issue("123456789012345678")
