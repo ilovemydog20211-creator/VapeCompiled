@@ -3448,6 +3448,52 @@ run(function()
 end)
 
 run(function()
+	local RemoveSwordEffects
+	local originalSwordEffect
+	local originalScytheAnimation
+	local swordEffectHook
+	local scytheAnimationHook
+
+	RemoveSwordEffects = vape.Categories.Combat:CreateModule({
+		Name = 'RemoveSwordEffects',
+		Function = function(callback)
+			if callback then
+				originalSwordEffect = bedwars.SwordController.playSwordEffect
+				originalScytheAnimation = bedwars.ScytheController.playLocalAnimation
+				if type(originalSwordEffect) ~= 'function' or type(originalScytheAnimation) ~= 'function' then
+					originalSwordEffect = nil
+					originalScytheAnimation = nil
+					notif('RemoveSwordEffects', 'Sword effect controllers are unavailable', 3, 'warning')
+					task.defer(function()
+						if RemoveSwordEffects.Enabled then
+							RemoveSwordEffects:Toggle()
+						end
+					end)
+					return
+				end
+
+				swordEffectHook = function() end
+				scytheAnimationHook = function() end
+				bedwars.SwordController.playSwordEffect = swordEffectHook
+				bedwars.ScytheController.playLocalAnimation = scytheAnimationHook
+			else
+				if bedwars.SwordController.playSwordEffect == swordEffectHook then
+					bedwars.SwordController.playSwordEffect = originalSwordEffect
+				end
+				if bedwars.ScytheController.playLocalAnimation == scytheAnimationHook then
+					bedwars.ScytheController.playLocalAnimation = originalScytheAnimation
+				end
+				originalSwordEffect = nil
+				originalScytheAnimation = nil
+				swordEffectHook = nil
+				scytheAnimationHook = nil
+			end
+		end,
+		Tooltip = 'removes first-person sword and scythe swing effects'
+	})
+end)
+
+run(function()
 	local Viewmodel
 	local Depth
 	local Horizontal
