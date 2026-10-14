@@ -6,11 +6,9 @@ import secrets
 import threading
 import time
 import asyncio
-from collections import deque
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Optional
 
 import discord
 from discord import app_commands
@@ -20,113 +18,55 @@ DISCORD_GUILD_ID = "1558998367512559636"
 ADMIN_ROLE_ID = "1559000140675813417"
 PORT = int(os.environ.get("PORT") or os.environ.get("SERVER_PORT") or "8787")
 KEY_STORE_PATH = Path(os.environ.get("KEY_STORE_PATH", "./data/keys.json"))
-MODERATION_STORE_PATH = Path(
-    os.environ.get("MODERATION_STORE_PATH", "./data/moderation.json")
-)
 KEY_PATTERN = re.compile(r"^ZV-[A-Za-z0-9_-]{32}$")
-LINK_PATTERN = re.compile(
-    r"(?<![@\w])(?:https?://)?(?:www\.)?"
-    r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}"
-    r"(?::\d{1,5})?(?:[/?#][^\s]*)?|"
-    r"discord(?:app)?\.com/invite/[a-z0-9-]+|discord\.gg/[a-z0-9-]+",
+DURATION_PATTERN = re.compile(
+    r"(\d+)\s*(months?|mo|minutes?|m|hours?|h|days?|d|weeks?|w)",
     re.IGNORECASE,
 )
+DEFAULT_KEY_LIFETIME = timedelta(days=30)
+MAX_KEY_LIFETIME = timedelta(days=30)
 RATE_LIMIT = 60
 RATE_WINDOW_SECONDS = 60
 MAX_BODY_BYTES = 1024
 
 
-class ModerationSettings:
-    DEFAULTS = {
-        "anti_raid": {
-            "enabled": False,
-            "threshold": 5,
-            "window_seconds": 10,
-            "punishment": "timeout",
-        },
-        "anti_link": {
-            "enabled": False,
-            "punishment": "delete",
-        },
-    }
+def parse_key_lifetime(value):
+    if value is None:
+        return DEFAULT_KEY_LIFETIME
+    match = DURATION_PATTERN.fullmatch(value.strip())
+    if match is None:
+        raise ValueError("Use a duration such as 1m, 1h, 7d, or 1 month.")
 
-    def __init__(self, path):
-        self.path = path
-        self.lock = threading.Lock()
-        self.settings = {
-            name: values.copy() for name, values in self.DEFAULTS.items()
-        }
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._load()
+    amount = int(match.group(1))
+    unit = match.group(2).lower()
+    try:
+        if unit.startswith("mo"):
+            lifetime = timedelta(days=amount * 30)
+        elif unit.startswith("w"):
+            lifetime = timedelta(weeks=amount)
+        elif unit.startswith("d"):
+            lifetime = timedelta(days=amount)
+        elif unit.startswith("h"):
+            lifetime = timedelta(hours=amount)
+        else:
+            lifetime = timedelta(minutes=amount)
+    except OverflowError as error:
+        raise ValueError(
+            "Key duration must be between 1 minute and 1 month."
+        ) from error
 
-    def _load(self):
-        try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return
+    if lifetime < timedelta(minutes=1) or lifetime > MAX_KEY_LIFETIME:
+        raise ValueError("Key duration must be between 1 minute and 1 month.")
+    return lifetime
 
-        if (
-            not isinstance(data, dict)
-            or data.get("version") != 1
-            or not isinstance(data.get("settings"), dict)
-        ):
-            raise ValueError("Moderation settings have an unsupported format")
 
-        for name, values in data["settings"].items():
-            if name not in self.DEFAULTS or not isinstance(values, dict):
-                raise ValueError("Moderation settings contain an invalid section")
-            merged = self.settings[name].copy()
-            merged.update(values)
-            if name == "anti_raid":
-                if (
-                    not isinstance(merged["enabled"], bool)
-                    or isinstance(merged["threshold"], bool)
-                    or not isinstance(merged["threshold"], int)
-                    or not 2 <= merged["threshold"] <= 100
-                    or isinstance(merged["window_seconds"], bool)
-                    or not isinstance(merged["window_seconds"], int)
-                    or not 1 <= merged["window_seconds"] <= 300
-                    or merged["punishment"] not in {"warn", "timeout", "kick", "ban"}
-                ):
-                    raise ValueError("Moderation settings contain invalid anti-raid values")
-            elif (
-                not isinstance(merged["enabled"], bool)
-                or merged["punishment"] not in {
-                    "delete", "warn", "timeout", "kick", "ban"
-                }
-            ):
-                raise ValueError("Moderation settings contain invalid anti-link values")
-            self.settings[name] = merged
-
-    def get(self, section):
-        with self.lock:
-            return self.settings[section].copy()
-
-    def update(self, section, values):
-        with self.lock:
-            updated = self.settings[section].copy()
-            updated.update(values)
-            all_settings = {
-                name: config.copy() for name, config in self.settings.items()
-            }
-            all_settings[section] = updated
-            temporary_path = self.path.with_name(
-                f"{self.path.name}.{os.getpid()}.tmp"
-            )
-            try:
-                with temporary_path.open("w", encoding="utf-8") as file:
-                    json.dump(
-                        {"version": 1, "settings": all_settings},
-                        file,
-                        indent=2,
-                    )
-                    file.flush()
-                    os.fsync(file.fileno())
-                os.chmod(temporary_path, 0o600)
-                os.replace(temporary_path, self.path)
-            finally:
-                temporary_path.unlink(missing_ok=True)
-            self.settings = all_settings
+def parse_timestamp(value):
+    if not isinstance(value, str):
+        raise ValueError("Key store contains an invalid timestamp")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("Key store timestamps must include a timezone")
+    return parsed.astimezone(timezone.utc)
 
 
 class KeyStore:
@@ -158,7 +98,17 @@ class KeyStore:
                 or record["discordId"] in self.users
             ):
                 raise ValueError("Key store contains an invalid record")
+            issued_at = parse_timestamp(record.get("issuedAt"))
+            if "expiresAt" not in record:
+                record = dict(record)
+                record["expiresAt"] = (
+                    issued_at + DEFAULT_KEY_LIFETIME
+                ).isoformat()
+            else:
+                parse_timestamp(record["expiresAt"])
             self.users[record["discordId"]] = record
+        if records and any("expiresAt" not in record for record in records):
+            self._save(self.users)
 
     def _save(self, users):
         temporary_path = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
@@ -172,30 +122,39 @@ class KeyStore:
         finally:
             temporary_path.unlink(missing_ok=True)
 
-    def issue(self, discord_id):
+    def issue(self, discord_id, lifetime=DEFAULT_KEY_LIFETIME):
         discord_id = str(discord_id)
+        if (
+            not isinstance(lifetime, timedelta)
+            or lifetime < timedelta(minutes=1)
+            or lifetime > MAX_KEY_LIFETIME
+        ):
+            raise ValueError("Key duration must be between 1 minute and 1 month.")
         with self.lock:
             key = "ZV-" + secrets.token_urlsafe(24)
+            now = datetime.now(timezone.utc)
+            expires_at = now + lifetime
             record = {
                 "discordId": discord_id,
                 "keyHash": hashlib.sha256(key.encode("utf-8")).hexdigest(),
-                "issuedAt": datetime.now(timezone.utc).isoformat(),
+                "issuedAt": now.isoformat(),
+                "expiresAt": expires_at.isoformat(),
             }
             updated_users = dict(self.users)
             updated_users[discord_id] = record
             self._save(updated_users)
             self.users = updated_users
-            return key
+            return key, expires_at.isoformat()
 
     def validate_for_roblox_user(self, key, roblox_user_id):
         if not isinstance(key, str) or not KEY_PATTERN.fullmatch(key):
-            return None, "invalid"
+            return None, "invalid", None
         if (
             isinstance(roblox_user_id, bool)
             or not isinstance(roblox_user_id, int)
             or roblox_user_id <= 0
         ):
-            return None, "invalid_user"
+            return None, "invalid_user", None
 
         key_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()
         with self.lock:
@@ -204,9 +163,13 @@ class KeyStore:
                     continue
 
                 roblox_id = str(roblox_user_id)
+                expires_at = parse_timestamp(record["expiresAt"])
+                if datetime.now(timezone.utc) >= expires_at:
+                    return discord_id, "expired", record["expiresAt"]
+
                 bound_id = record.get("robloxUserId")
                 if bound_id is not None and bound_id != roblox_id:
-                    return None, "account_mismatch"
+                    return discord_id, "account_mismatch", record["expiresAt"]
 
                 if bound_id is None:
                     updated_users = dict(self.users)
@@ -216,8 +179,8 @@ class KeyStore:
                     self._save(updated_users)
                     self.users = updated_users
 
-                return discord_id, "valid"
-        return None, "invalid"
+                return discord_id, "valid", record["expiresAt"]
+        return None, "invalid", None
 
     def revoke(self, discord_id):
         discord_id = str(discord_id)
@@ -239,7 +202,7 @@ class KeyStore:
             return count
 
 
-def make_api_handler(key_store, on_valid_key=None):
+def make_api_handler(key_store, on_key_validation=None):
     rate_lock = threading.Lock()
     rate_windows = {}
 
@@ -314,7 +277,7 @@ def make_api_handler(key_store, on_valid_key=None):
                 return
 
             try:
-                owner_id, result = key_store.validate_for_roblox_user(
+                owner_id, result, expires_at = key_store.validate_for_roblox_user(
                     payload["key"],
                     payload["robloxUserId"],
                 )
@@ -323,8 +286,13 @@ def make_api_handler(key_store, on_valid_key=None):
                 self._send_json(500, {"error": "Could not save key binding"})
                 return
 
-            if owner_id is not None and on_valid_key:
-                on_valid_key(owner_id)
+            if on_key_validation:
+                on_key_validation(
+                    owner_id,
+                    payload["robloxUserId"],
+                    result,
+                    expires_at,
+                )
             self._send_json(
                 200,
                 {
@@ -349,15 +317,12 @@ def main():
         raise RuntimeError("PORT must be a valid TCP port")
 
     key_store = KeyStore(KEY_STORE_PATH)
-    moderation_settings = ModerationSettings(MODERATION_STORE_PATH)
     intents = discord.Intents.default()
     intents.message_content = True
     intents.members = True
     bot = discord.Client(intents=intents)
     command_tree = app_commands.CommandTree(bot)
     configured_guild = discord.Object(id=int(DISCORD_GUILD_ID))
-    recent_joins = deque()
-    raid_punished_users = set()
 
     def is_member_admin(member, guild):
         return (
@@ -369,168 +334,46 @@ def main():
     def is_server_admin(message):
         return is_member_admin(message.author, message.guild)
 
-    def is_interaction_admin(interaction):
-        return (
-            interaction.guild is not None
-            and is_member_admin(interaction.user, interaction.guild)
-        )
-
-    async def apply_punishment(member, punishment, reason):
-        try:
-            if punishment == "warn":
-                await member.send(f"Warning from {member.guild.name}: {reason}")
-            elif punishment == "timeout":
-                await member.timeout(timedelta(minutes=10), reason=reason)
-            elif punishment == "kick":
-                await member.kick(reason=reason)
-            elif punishment == "ban":
-                await member.guild.ban(
-                    member,
-                    reason=reason,
-                    delete_message_seconds=0,
-                )
-            else:
-                raise ValueError(f"Unsupported moderation punishment: {punishment}")
-        except discord.HTTPException as error:
-            print(
-                f"Could not apply {punishment} to {member} ({member.id}): {error}"
-            )
-
-    @command_tree.command(
-        name="antiraid",
-        description="Configure protection against rapid member joins",
-        guild=configured_guild,
-    )
-    @app_commands.describe(
-        enabled="Turn anti-raid protection on or off",
-        threshold="Number of joins that triggers protection (2-100)",
-        window_seconds="Time window for counting joins (1-300 seconds)",
-        punishment="Action to take when a raid is detected",
-    )
-    @app_commands.choices(
-        punishment=[
-            app_commands.Choice(name="Warn by DM", value="warn"),
-            app_commands.Choice(name="Timeout for 10 minutes", value="timeout"),
-            app_commands.Choice(name="Kick", value="kick"),
-            app_commands.Choice(name="Ban", value="ban"),
-        ]
-    )
-    async def antiraid(
-        interaction: discord.Interaction,
-        enabled: Optional[bool] = None,
-        threshold: Optional[app_commands.Range[int, 2, 100]] = None,
-        window_seconds: Optional[app_commands.Range[int, 1, 300]] = None,
-        punishment: Optional[app_commands.Choice[str]] = None,
-    ):
-        if not is_interaction_admin(interaction):
-            await interaction.response.send_message(
-                "Only server admins can configure moderation.",
-                ephemeral=True,
-            )
-            return
-
-        changes = {}
-        if enabled is not None:
-            changes["enabled"] = enabled
-        if threshold is not None:
-            changes["threshold"] = threshold
-        if window_seconds is not None:
-            changes["window_seconds"] = window_seconds
-        if punishment is not None:
-            changes["punishment"] = punishment.value
-        if changes:
-            try:
-                moderation_settings.update("anti_raid", changes)
-            except OSError as error:
-                print(f"Could not save anti-raid settings: {error}")
-                await interaction.response.send_message(
-                    "Could not save anti-raid settings. Check the bot's data directory.",
-                    ephemeral=True,
-                )
-                return
-
-        config = moderation_settings.get("anti_raid")
-        state = "enabled" if config["enabled"] else "disabled"
-        await interaction.response.send_message(
-            f"Anti-raid is **{state}**. It triggers at "
-            f"**{config['threshold']} joins / {config['window_seconds']} seconds** "
-            f"and uses **{config['punishment']}**.",
-            ephemeral=True,
-        )
-
-    @command_tree.command(
-        name="antilink",
-        description="Configure protection against links in server messages",
-        guild=configured_guild,
-    )
-    @app_commands.describe(
-        enabled="Turn anti-link protection on or off",
-        punishment="Action to take when a non-admin posts a link",
-    )
-    @app_commands.choices(
-        punishment=[
-            app_commands.Choice(name="Delete message only", value="delete"),
-            app_commands.Choice(name="Warn by DM", value="warn"),
-            app_commands.Choice(name="Timeout for 10 minutes", value="timeout"),
-            app_commands.Choice(name="Kick", value="kick"),
-            app_commands.Choice(name="Ban", value="ban"),
-        ]
-    )
-    async def antilink(
-        interaction: discord.Interaction,
-        enabled: Optional[bool] = None,
-        punishment: Optional[app_commands.Choice[str]] = None,
-    ):
-        if not is_interaction_admin(interaction):
-            await interaction.response.send_message(
-                "Only server admins can configure moderation.",
-                ephemeral=True,
-            )
-            return
-
-        changes = {}
-        if enabled is not None:
-            changes["enabled"] = enabled
-        if punishment is not None:
-            changes["punishment"] = punishment.value
-        if changes:
-            try:
-                moderation_settings.update("anti_link", changes)
-            except OSError as error:
-                print(f"Could not save anti-link settings: {error}")
-                await interaction.response.send_message(
-                    "Could not save anti-link settings. Check the bot's data directory.",
-                    ephemeral=True,
-                )
-                return
-
-        config = moderation_settings.get("anti_link")
-        state = "enabled" if config["enabled"] else "disabled"
-        await interaction.response.send_message(
-            f"Anti-link is **{state}** and uses **{config['punishment']}** "
-            "for links. Link messages are always deleted.",
-            ephemeral=True,
-        )
-
-    async def log_key_use(discord_id):
+    async def log_key_event(event, **details):
         guild = bot.get_guild(int(DISCORD_GUILD_ID))
         if guild is None:
             raise RuntimeError("Configured Discord server is not available")
         channel = discord.utils.get(guild.text_channels, name="key-usage-logs")
+        timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        fields = [f"event={event}", f"timestamp={timestamp}"]
+        fields.extend(
+            f"{name}={value}"
+            for name, value in details.items()
+            if value is not None
+        )
+        entry = "`" + " | ".join(fields) + "`"
         if channel is None:
+            print(f"Key audit event (no #key-usage-logs channel): {entry}")
             return
-        await channel.send(f"Valid key used by Discord account <@{discord_id}>.")
+        try:
+            await channel.send(
+                entry,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException as error:
+            print(f"Could not write key audit event: {error}")
 
-    def queue_key_use_log(discord_id):
+    def queue_key_validation_log(owner_id, roblox_user_id, result, expires_at):
         future = asyncio.run_coroutine_threadsafe(
-            log_key_use(discord_id),
+            log_key_event(
+                "key_validated",
+                discord_id=owner_id,
+                roblox_user_id=roblox_user_id,
+                result=result,
+                expires_at=expires_at,
+            ),
             bot.loop,
         )
 
         def report_log_error(completed):
             error = completed.exception()
             if error:
-                print(f"Could not log key use: {error}")
+                print(f"Could not log key validation: {error}")
 
         future.add_done_callback(report_log_error)
 
@@ -541,46 +384,20 @@ def main():
         if str(message.guild.id) != DISCORD_GUILD_ID:
             return
 
-        link_config = moderation_settings.get("anti_link")
-        if (
-            link_config["enabled"]
-            and not is_server_admin(message)
-            and LINK_PATTERN.search(message.content)
-        ):
-            reason = "Posting links is not allowed while anti-link protection is enabled."
-            try:
-                await message.delete(reason="Anti-link protection")
-            except discord.HTTPException as error:
-                print(
-                    f"Could not delete link message from {message.author} "
-                    f"({message.author.id}): {error}"
-                )
-            if link_config["punishment"] != "delete":
-                await apply_punishment(
-                    message.author,
-                    link_config["punishment"],
-                    reason,
-                )
-            return
-
         command = message.content.strip().lower()
-        if command in {".key", ",key"}:
-            if not is_server_admin(message):
-                await message.reply("You need the required admin role to use `.key`.")
-                return
-
-            key = key_store.issue(message.author.id)
-            try:
-                await message.author.send(
-                    f"Your zachv4 access key is:\n`{key}`\n\n"
-                    "Keep this key private. Running `.key` again replaces your old key."
-                )
-                await message.reply("I sent your key in a DM. Keep it private.")
-            except discord.Forbidden:
-                await message.reply(
-                    "I couldn't DM you. Enable DMs from server members, "
-                    "then run `.key` again for a fresh key."
-                )
+        if command in {".help", ",help"}:
+            await message.reply(
+                "**Key bot commands**\n"
+                "`.help` — show this list\n"
+                "`.key [@user] [duration]` — issue a key by DM "
+                "(default: 30 days; 1 minute to 1 month)\n"
+                "`.key revoke @user` — revoke one user's key\n"
+                "`.revoke @user` or `.revoke all` — revoke keys\n"
+                "`.logs` — create or secure the private key audit channel\n\n"
+                "Durations: `1m`, `1h`, `7d`, `1w`, or `1 month`.\n"
+                "Key issuance and revocation require the configured admin role "
+                "or Discord Administrator."
+            )
             return
 
         if command in {".logs", ",logs"}:
@@ -594,6 +411,7 @@ def main():
             bot_member = message.guild.me
             if bot_member is None:
                 raise RuntimeError("Bot member is not available in the configured server")
+            admin_role = message.guild.get_role(int(ADMIN_ROLE_ID))
             private_permissions = {
                 message.guild.default_role: discord.PermissionOverwrite(
                     view_channel=False,
@@ -604,6 +422,12 @@ def main():
                     read_message_history=True,
                 ),
             }
+            if admin_role is not None:
+                private_permissions[admin_role] = discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True,
+                )
             if channel is None:
                 channel = await message.guild.create_text_channel(
                     "key-usage-logs",
@@ -611,46 +435,129 @@ def main():
                     reason=f"Key usage logs requested by {message.author}",
                 )
             else:
-                await channel.set_permissions(
-                    message.guild.default_role,
-                    view_channel=False,
-                    reason="Restrict access to key usage logs",
-                )
-                await channel.set_permissions(
-                    bot_member,
-                    private_permissions[bot_member],
-                    reason="Allow bot to write key usage logs",
-                )
+                for target, permissions in private_permissions.items():
+                    await channel.set_permissions(
+                        target,
+                        overwrite=permissions,
+                        reason="Secure the key usage log channel",
+                    )
             await message.reply(f"Key usage logs are enabled in {channel.mention}.")
             return
 
         revoke_match = re.fullmatch(r"[.,]revoke\s+(all|<@!?(\d+)>)", command)
-        if revoke_match:
+        key_revoke_match = re.fullmatch(
+            r"[.,]key\s+revoke\s+<@!?(\d+)>",
+            command,
+        )
+        if revoke_match or key_revoke_match:
             if not is_server_admin(message):
                 await message.reply("Only server admins can revoke keys.")
                 return
 
-            if revoke_match.group(1).lower() == "all":
+            if revoke_match and revoke_match.group(1) == "all":
                 count = key_store.revoke_all()
-                await message.reply(f"Revoked all {count} active key(s).")
+                await message.reply(f"Revoked all {count} key(s).")
+                await log_key_event(
+                    "keys_revoked",
+                    actor_id=message.author.id,
+                    count=count,
+                )
             else:
-                revoked = key_store.revoke(revoke_match.group(2))
+                target_id = (
+                    key_revoke_match.group(1)
+                    if key_revoke_match
+                    else revoke_match.group(2)
+                )
+                revoked = key_store.revoke(target_id)
                 await message.reply(
                     "That user's key has been revoked."
                     if revoked else "That user has no active key."
                 )
+                await log_key_event(
+                    "key_revoked" if revoked else "key_revoke_not_found",
+                    actor_id=message.author.id,
+                    target_id=target_id,
+                )
             return
 
-        match = re.fullmatch(r"[.,]key\s+revoke\s+<@!?(\d+)>", command)
-        if match:
-            if not is_server_admin(message):
-                await message.reply("Only server admins can revoke keys.")
+        key_match = re.fullmatch(
+            r"[.,]key(?:\s+(<@!?\d+>))?(?:\s+(.+))?",
+            command,
+        )
+        if key_match is None:
+            return
+        if not is_server_admin(message):
+            await message.reply("You need the required admin role to use `.key`.")
+            return
+
+        try:
+            lifetime = parse_key_lifetime(key_match.group(2))
+        except ValueError as error:
+            await message.reply(str(error))
+            return
+
+        target_id = (
+            re.search(r"\d+", key_match.group(1)).group()
+            if key_match.group(1)
+            else str(message.author.id)
+        )
+        target = message.guild.get_member(int(target_id))
+        if target is None:
+            try:
+                target = await message.guild.fetch_member(int(target_id))
+            except discord.NotFound:
+                await message.reply("That user is not a member of this server.")
                 return
-            revoked = key_store.revoke(match.group(1))
-            await message.reply(
-                "That user's key has been revoked."
-                if revoked else "That user has no active key."
+            except discord.HTTPException as error:
+                print(f"Could not look up key recipient {target_id}: {error}")
+                await message.reply("I could not look up that server member.")
+                return
+
+        try:
+            key, expires_at = key_store.issue(target.id, lifetime)
+        except OSError as error:
+            print(f"Could not save an issued key for {target.id}: {error}")
+            await message.reply("Could not save the key. Check the key service logs.")
+            return
+
+        try:
+            await target.send(
+                f"Your zachv4 access key is:\n`{key}`\n\n"
+                f"This key expires at {expires_at} (UTC) and is locked to the "
+                "first Roblox account that successfully uses it. Keep it private."
             )
+        except discord.Forbidden:
+            await message.reply(
+                f"I couldn't DM {target.mention}. Enable DMs and ask an admin "
+                "to issue a new key."
+            )
+            await log_key_event(
+                "key_delivery_failed",
+                actor_id=message.author.id,
+                target_id=target.id,
+                expires_at=expires_at,
+            )
+            return
+        except discord.HTTPException as error:
+            print(f"Could not DM a key to Discord user {target.id}: {error}")
+            await message.reply("I could not deliver the key. Check the key service logs.")
+            await log_key_event(
+                "key_delivery_failed",
+                actor_id=message.author.id,
+                target_id=target.id,
+                expires_at=expires_at,
+            )
+            return
+
+        await message.reply(f"I sent a key to {target.mention} by DM.")
+        await log_key_event(
+            "key_issued",
+            actor_id=message.author.id,
+            target_id=target.id,
+            duration=key_match.group(2) or "30d",
+            expires_at=expires_at,
+        )
+
 
     @bot.event
     async def on_ready():
@@ -659,48 +566,15 @@ def main():
             "Prefix commands require Message Content Intent enabled both in this "
             "bot's intents and in the Discord Developer Portal."
         )
+        command_tree.clear_commands(guild=configured_guild)
         try:
-            synced = await command_tree.sync(guild=configured_guild)
-            print(f"Synced {len(synced)} moderation slash command(s)")
+            await command_tree.sync(guild=configured_guild)
         except discord.HTTPException as error:
-            print(f"Could not sync moderation slash commands: {error}")
-
-    @bot.event
-    async def on_member_join(member):
-        if str(member.guild.id) != DISCORD_GUILD_ID:
-            return
-        if is_member_admin(member, member.guild):
-            return
-        config = moderation_settings.get("anti_raid")
-        if not config["enabled"]:
-            recent_joins.clear()
-            raid_punished_users.clear()
-            return
-
-        now = time.monotonic()
-        recent_joins.append((now, member))
-        while (
-            recent_joins
-            and now - recent_joins[0][0] > config["window_seconds"]
-        ):
-            recent_joins.popleft()
-        active_user_ids = {joined_member.id for _, joined_member in recent_joins}
-        raid_punished_users.intersection_update(active_user_ids)
-
-        if len(recent_joins) >= config["threshold"]:
-            for _, joined_member in recent_joins:
-                if joined_member.id in raid_punished_users:
-                    continue
-                raid_punished_users.add(joined_member.id)
-                await apply_punishment(
-                    joined_member,
-                    config["punishment"],
-                    "A rapid-join raid was detected in the server.",
-                )
+            print(f"Could not remove retired moderation slash commands: {error}")
 
     api_server = ThreadingHTTPServer(
         ("0.0.0.0", PORT),
-        make_api_handler(key_store, queue_key_use_log),
+        make_api_handler(key_store, queue_key_validation_log),
     )
     api_server.daemon_threads = True
     api_thread = threading.Thread(

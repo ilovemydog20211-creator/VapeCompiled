@@ -348,6 +348,9 @@ if shared.VapeKeyAuthorized ~= true then
 		if payload.reason == 'account_mismatch' then
 			return false, 'This key is locked to another Roblox account.'
 		end
+		if payload.reason == 'expired' then
+			return false, 'This key has expired. Ask an admin for a new one.'
+		end
 		return false, 'Invalid or revoked key.'
 	end
 
