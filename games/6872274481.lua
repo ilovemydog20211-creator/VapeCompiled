@@ -34677,3 +34677,47 @@ run(function()
 		end
 	})
 end)
+run(function()
+	local Ambience
+	local lightingService = cloneref(game:GetService('Lighting'))
+	local lightingstuff = {}
+	local skybox
+
+	Ambience = vape.Legit:CreateModule({
+		Name = 'Rose Ambience',
+		Function = function(callback)
+			if callback then
+				lightingstuff.Ambient = lightingService.Ambient
+				lightingstuff.ColorShift_Bottom = lightingService.ColorShift_Bottom
+				lightingstuff.ColorShift_Top = lightingService.ColorShift_Top
+				lightingstuff.OutdoorAmbient = lightingService.OutdoorAmbient
+				lightingstuff.Brightness = lightingService.Brightness
+
+				lightingService.Ambient = Color3.fromRGB(255, 0, 208)
+				lightingService.ColorShift_Bottom = Color3.fromRGB(111, 43, 150)
+				lightingService.ColorShift_Top = Color3.fromRGB(111, 43, 150)
+				lightingService.OutdoorAmbient = Color3.fromRGB(111, 43, 150)
+				lightingService.Brightness = 4
+
+				skybox = Instance.new('Sky')
+				skybox.SkyboxBk = 'http://www.roblox.com/asset/?id=271042516'
+				skybox.SkyboxDn = 'http://www.roblox.com/asset/?id=271077243'
+				skybox.SkyboxFt = 'http://www.roblox.com/asset/?id=271042556'
+				skybox.SkyboxLf = 'http://www.roblox.com/asset/?id=271042310'
+				skybox.SkyboxRt = 'http://www.roblox.com/asset/?id=271042467'
+				skybox.SkyboxUp = 'http://www.roblox.com/asset/?id=271077958'
+				skybox.Parent = lightingService
+				Ambience:Clean(skybox)
+			else
+				for i, v in lightingstuff do
+					lightingService[i] = v
+				end
+				if skybox then
+					skybox:Destroy()
+					skybox = nil
+				end
+			end
+		end,
+		Tooltip = 'Rose Ambience'
+	})
+end)
