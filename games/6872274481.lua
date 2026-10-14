@@ -27864,7 +27864,7 @@ run(function()
 
 				local map = getMap()
 				local root = lplr.Character and lplr.Character:FindFirstChild('HumanoidRootPart')
-				local surfaceY = getMapGroundHeight(map) - 4
+				local surfaceY = getMapGroundHeight(map) - 16
 				currentWaterCFrame = CFrame.new(root and root.Position.X or 0, surfaceY - waterSize.Y / 2, root and root.Position.Z or 0)
 				Terrain:FillBlock(currentWaterCFrame, waterSize, Enum.Material.Water)
 			else
