@@ -27748,10 +27748,15 @@ end)
 run(function()
 	local Players = game:GetService('Players')
 	local Terrain = workspace.Terrain
+	local Lighting = game:GetService('Lighting')
 	local lplr = Players.LocalPlayer
 	local waterSize = Vector3.new(4000, 20, 4000)
 	local currentWaterCFrame
 	local oldWaterSettings
+	local oldLightingSettings
+	local oceanAtmosphere
+	local oldAtmosphereSettings
+	local createdAtmosphere
 
 	local function getMap()
 		local map = workspace:FindFirstChild('Map')
@@ -27821,11 +27826,41 @@ run(function()
 					WaveSize = Terrain.WaterWaveSize,
 					Transparency = Terrain.WaterTransparency
 				}
-				Terrain.WaterColor = Color3.fromRGB(12, 60, 110)
-				Terrain.WaterReflectance = 0.8
-				Terrain.WaterWaveSpeed = 8
-				Terrain.WaterWaveSize = 0
-				Terrain.WaterTransparency = 0.8
+				Terrain.WaterColor = Color3.fromRGB(20, 76, 91)
+				Terrain.WaterReflectance = 0.16
+				Terrain.WaterWaveSpeed = 7
+				Terrain.WaterWaveSize = 0.18
+				Terrain.WaterTransparency = 0.24
+
+				oldLightingSettings = {
+					Diffuse = Lighting.EnvironmentDiffuseScale,
+					Specular = Lighting.EnvironmentSpecularScale
+				}
+				Lighting.EnvironmentDiffuseScale = 1
+				Lighting.EnvironmentSpecularScale = 1
+
+				oceanAtmosphere = Lighting:FindFirstChildOfClass('Atmosphere')
+				createdAtmosphere = oceanAtmosphere == nil
+				if createdAtmosphere then
+					oceanAtmosphere = Instance.new('Atmosphere')
+					oceanAtmosphere.Name = 'VoidOceanAtmosphere'
+					oceanAtmosphere.Parent = Lighting
+				else
+					oldAtmosphereSettings = {
+						Color = oceanAtmosphere.Color,
+						Decay = oceanAtmosphere.Decay,
+						Density = oceanAtmosphere.Density,
+						Glare = oceanAtmosphere.Glare,
+						Haze = oceanAtmosphere.Haze,
+						Offset = oceanAtmosphere.Offset
+					}
+				end
+				oceanAtmosphere.Color = Color3.fromRGB(199, 218, 226)
+				oceanAtmosphere.Decay = Color3.fromRGB(105, 132, 151)
+				oceanAtmosphere.Density = 0.18
+				oceanAtmosphere.Glare = 0.12
+				oceanAtmosphere.Haze = 1.1
+				oceanAtmosphere.Offset = 0.05
 
 				local map = getMap()
 				local root = lplr.Character and lplr.Character:FindFirstChild('HumanoidRootPart')
@@ -27845,6 +27880,24 @@ run(function()
 					Terrain.WaterTransparency = oldWaterSettings.Transparency
 					oldWaterSettings = nil
 				end
+				if oldLightingSettings then
+					Lighting.EnvironmentDiffuseScale = oldLightingSettings.Diffuse
+					Lighting.EnvironmentSpecularScale = oldLightingSettings.Specular
+					oldLightingSettings = nil
+				end
+				if createdAtmosphere then
+					if oceanAtmosphere then oceanAtmosphere:Destroy() end
+				elseif oldAtmosphereSettings and oceanAtmosphere then
+					oceanAtmosphere.Color = oldAtmosphereSettings.Color
+					oceanAtmosphere.Decay = oldAtmosphereSettings.Decay
+					oceanAtmosphere.Density = oldAtmosphereSettings.Density
+					oceanAtmosphere.Glare = oldAtmosphereSettings.Glare
+					oceanAtmosphere.Haze = oldAtmosphereSettings.Haze
+					oceanAtmosphere.Offset = oldAtmosphereSettings.Offset
+				end
+				oceanAtmosphere = nil
+				oldAtmosphereSettings = nil
+				createdAtmosphere = nil
 			end
 		end
 	})
