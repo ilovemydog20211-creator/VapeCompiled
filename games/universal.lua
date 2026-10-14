@@ -282,6 +282,14 @@ vape.Libraries.auraanims = {
 		{CFrame = CFrame.new(0.7, -0.71, 0.59) * CFrame.Angles(math.rad(-84), math.rad(50), math.rad(-38)), Time = 0.1},
 		{CFrame = CFrame.new(0.7, -0.71, 0.59) * CFrame.Angles(math.rad(-84), math.rad(50), math.rad(-38)), Time = 0.05},
 		{CFrame = CFrame.new(0.63, -0.1, 1.37) * CFrame.Angles(math.rad(-84), math.rad(50), math.rad(-38)), Time = 0.15}
+	},
+	['Quick Stab'] = {
+		{CFrame = CFrame.new(0.05, -0.08, -0.48) * CFrame.Angles(math.rad(-82), math.rad(8), math.rad(-12)), Time = 0.08},
+		{CFrame = CFrame.new(0.02, -0.22, 0.12) * CFrame.Angles(math.rad(-24), math.rad(4), math.rad(-8)), Time = 0.12}
+	},
+	['Backhand'] = {
+		{CFrame = CFrame.new(-0.3, -0.12, -0.16) * CFrame.Angles(math.rad(-28), math.rad(-72), math.rad(-42)), Time = 0.11},
+		{CFrame = CFrame.new(0.18, -0.28, 0.08) * CFrame.Angles(math.rad(-138), math.rad(36), math.rad(24)), Time = 0.13}
 	}
 }
 

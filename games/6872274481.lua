@@ -591,8 +591,15 @@ local function hotbarSwitch(slot)
 			type = 'InventorySelectHotbarSlot',
 			slot = slot
 		})
-		vapeEvents.InventoryChanged.Event:Wait()
-		return true
+		local deadline = os.clock() + 0.35
+		repeat
+			if store.inventory.hotbarSlot == slot then
+				return true
+			end
+			task.wait()
+		until os.clock() >= deadline
+		warn('[aerov4] hotbar switch did not update to slot ' .. tostring(slot))
+		return false
 	end
 	return false
 end
@@ -6717,6 +6724,7 @@ run(function()
 	local lastAttackTime = 0
 	local lastTargetTime = 0
 	local anims, AnimDelay, AnimTween, armC0 = vape.Libraries.auraanims, tick()
+	local activeWrist
 	local FROZEN_THRESHOLD = 10
 	local SERVER_REACH = 14.4
 	pcall(function()
@@ -8187,7 +8195,7 @@ run(function()
 		end
 
 		local item, ammo, projectile, itemMeta = unpack(readyProj)
-		local bowSlot, swordSlot
+		local bowSlot, swordSlot, swordTool
 		local originalSlot = store.inventory.hotbarSlot
 		local hotbar = store.inventory.hotbar
 
@@ -8203,6 +8211,7 @@ run(function()
 
 				if hm and hm.sword and not swordSlot then
 					swordSlot = i - 1
+					swordTool = hv.item.tool
 				end
 			end
 		end
@@ -8212,26 +8221,46 @@ run(function()
 		end
 
 		local token = setFHBusy()
+		local ok, fired = xpcall(function()
+			local switched = hotbarSwitch(bowSlot)
+			local equipped = lplr.Character and lplr.Character:FindFirstChild('HandInvItem')
+			local deadline = os.clock() + 0.35
+			while equipped and equipped.Value ~= item.tool and os.clock() < deadline do
+				task.wait()
+			end
+			if not equipped or equipped.Value ~= item.tool then
+				return false
+			end
+			if switched then
+				task.wait(0.03)
+			end
+			return shootProjectile(item, ammo, projectile, itemMeta, selfPos, ent, true, true)
+		end, debug.traceback)
 
-		if hotbarSwitch(bowSlot) then
-			task.wait(0.03)
+		local restoreSlot = swordSlot or originalSlot
+		if restoreSlot then
+			local restored, restoreError = pcall(hotbarSwitch, restoreSlot)
+			if not restored then
+				warn('[aerov4] fast hits could not restore the hotbar: ' .. tostring(restoreError))
+			end
 		end
-
-		local fired = shootProjectile(
-			item,
-			ammo,
-			projectile,
-			itemMeta,
-			selfPos,
-			ent,
-			true,
-			true
-		)
-
-		hotbarSwitch(swordSlot or originalSlot)
+		if swordTool and restoreSlot == swordSlot then
+			local hand = lplr.Character and lplr.Character:FindFirstChild('HandInvItem')
+			local deadline = os.clock() + 0.35
+			while hand and hand.Value ~= swordTool and os.clock() < deadline do
+				task.wait()
+			end
+			if not hand or hand.Value ~= swordTool then
+				warn('[aerov4] fast hits did not restore the sword to hand')
+			end
+		end
 		clearFHBusy(token)
 
-		return fired and true or false
+		if not ok then
+			warn('[aerov4] fast hits projectile switch failed: ' .. tostring(fired))
+			return false
+		end
+		return fired == true
 	end
 
 	local function doFastHits()
@@ -8664,6 +8693,15 @@ run(function()
 		end)
 	end
 
+	local function getAuraWrist()
+		local camera = workspace.CurrentCamera
+		local viewmodel = camera and camera:FindFirstChild('Viewmodel')
+		local rightHand = viewmodel and viewmodel:FindFirstChild('RightHand')
+		local wrist = rightHand and rightHand:FindFirstChild('RightWrist')
+			or (viewmodel and viewmodel:FindFirstChild('RightWrist', true))
+		return wrist and wrist:IsA('Motor6D') and wrist or nil
+	end
+
 	Killaura = vape.Categories.Blatant:CreateModule({
 		Name = 'Killaura',
 		Function = function(callback)
@@ -8738,18 +8776,27 @@ run(function()
 					swapViewmodel(true)
 					task.spawn(function()
 						local going = false
+						local wrist
 						repeat
-							if Attacking then
-								if not armC0 then
-									armC0 = gameCamera.Viewmodel.RightHand.RightWrist.C0
+							local currentWrist = getAuraWrist()
+							if currentWrist ~= wrist then
+								if wrist and wrist.Parent and armC0 then
+									wrist.C0 = armC0
 								end
+								wrist = currentWrist
+								activeWrist = wrist
+								armC0 = wrist and wrist.C0 or nil
+								going = false
+							end
+							if wrist and armC0 and Attacking then
 								local fresh = not going
 								going = true
 								if AnimationMode.Value == 'Random' then
 									anims.Random = {{CFrame = CFrame.Angles(math.rad(math.random(1, 360)), math.rad(math.random(1, 360)), math.rad(math.random(1, 360))), Time = 0.12}}
 								end
-								for _, step in anims[AnimationMode.Value] do
-									AnimTween = tweenService:Create(gameCamera.Viewmodel.RightHand.RightWrist, TweenInfo.new(fresh and (AnimationTween.Enabled and 0.001 or 0.1) or step.Time / AnimationSpeed.Value, Enum.EasingStyle.Linear), {
+								for _, step in anims[AnimationMode.Value] or {} do
+									local duration = fresh and (AnimationTween.Enabled and 0.001 or 0.1) or step.Time / math.max(AnimationSpeed.Value, 0.1)
+									AnimTween = tweenService:Create(wrist, TweenInfo.new(duration, Enum.EasingStyle.Linear), {
 										C0 = armC0 * step.CFrame
 									})
 									AnimTween:Play()
@@ -8757,14 +8804,14 @@ run(function()
 									fresh = false
 									if not Killaura.Enabled or not Attacking then break end
 								end
-							elseif going then
+							elseif wrist and going then
 								going = false
-								AnimTween = tweenService:Create(gameCamera.Viewmodel.RightHand.RightWrist, TweenInfo.new(AnimationTween.Enabled and 0.001 or 0.3, Enum.EasingStyle.Exponential), {
+								AnimTween = tweenService:Create(wrist, TweenInfo.new(AnimationTween.Enabled and 0.001 or 0.3, Enum.EasingStyle.Exponential), {
 									C0 = armC0
 								})
 								AnimTween:Play()
 							end
-							if not going then
+							if not wrist or not going then
 								task.wait(1 / 60)
 							end
 						until not Killaura.Enabled or not Animation.Enabled
@@ -9011,8 +9058,8 @@ run(function()
 				swapViewmodel(false)
 				Attacking = false
 				getgenv().Attacking = false
-				if armC0 then
-					AnimTween = tweenService:Create(gameCamera.Viewmodel.RightHand.RightWrist, TweenInfo.new(AnimationTween.Enabled and 0.001 or 0.3, Enum.EasingStyle.Exponential), {
+				if activeWrist and activeWrist.Parent and armC0 then
+					AnimTween = tweenService:Create(activeWrist, TweenInfo.new(AnimationTween.Enabled and 0.001 or 0.3, Enum.EasingStyle.Exponential), {
 						C0 = armC0
 					})
 					AnimTween:Play()
