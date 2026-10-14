@@ -27746,160 +27746,108 @@ run(function()
 	})
 end)
 run(function()
-    local Players = game:GetService("Players")
-    local Terrain = workspace.Terrain
-    local Lighting = game:GetService("Lighting")
-    local RunService = game:GetService("RunService")
-    local lplr = Players.LocalPlayer
+	local Players = game:GetService('Players')
+	local Terrain = workspace.Terrain
+	local lplr = Players.LocalPlayer
+	local waterSize = Vector3.new(4000, 20, 4000)
+	local currentWaterCFrame
+	local oldWaterSettings
 
-    -- Global States
-    local waterSize = Vector3.new(4000, 20, 4000)
-    local currentWaterCFrame = nil
-    local starEmitter = nil
-    
-    -- Slider Values (The Master Config)
-    local settings = {
-        Height = -40,
-        WaveSpeed = 8,
-        Glare = 0.8,
-        Transparency = 0.8,
-        StarSize = 0.5,
-        StarAmount = 50,
-        RainbowSpeed = 10,
-        ClockTime = 14, -- 14 is afternoon
-        MoonSize = 20,
-        Brightness = 2 -- Default lighting brightness
-    }
+	local function getMap()
+		local map = workspace:FindFirstChild('Map')
+		local worlds = map and map:FindFirstChild('Worlds')
+		return worlds and worlds:GetChildren()[1] or store.map
+	end
 
-    -- Original Settings for Cleanup
-    local oldSky = Lighting:FindFirstChildOfClass("Sky") and Lighting:FindFirstChildOfClass("Sky"):Clone() or nil
-    local oldClock = Lighting.ClockTime
-    local oldBrightness = Lighting.Brightness
+	local function getMapGroundHeight(map)
+		if map then
+			local heightBuckets = {}
+			for _, part in map:GetDescendants() do
+				if part:IsA('BasePart')
+					and part.CanCollide
+					and part.Transparency < 1
+					and part.CFrame.UpVector.Y > 0.95
+					and part.Size.X >= 3
+					and part.Size.Z >= 3 then
+					local topY = (part.CFrame * CFrame.new(0, part.Size.Y / 2, 0)).Position.Y
+					local bucket = math.floor(topY / 3 + 0.5)
+					local entry = heightBuckets[bucket] or {area = 0, weightedHeight = 0}
+					local area = part.Size.X * part.Size.Z
+					entry.area += area
+					entry.weightedHeight += topY * area
+					heightBuckets[bucket] = entry
+				end
+			end
 
-    local VoidOcean = vape.Categories.Render:CreateModule({
-        Name = "VoidOcean",
-        Function = function(callback)
-            if callback then
-                Terrain.WaterColor = Color3.fromRGB(12, 60, 110)
-                Terrain.WaterReflectance = settings.Glare
-                Terrain.WaterWaveSpeed = settings.WaveSpeed
-                Terrain.WaterTransparency = settings.Transparency
-                
-                local root = lplr.Character and lplr.Character:FindFirstChild("HumanoidRootPart")
-                currentWaterCFrame = CFrame.new(root and root.Position.X or 0, settings.Height, root and root.Position.Z or 0)
-                Terrain:FillBlock(currentWaterCFrame, waterSize, Enum.Material.Water)
-            else
-                -- Full Reset
-                if currentWaterCFrame then Terrain:FillBlock(currentWaterCFrame, waterSize, Enum.Material.Air) end
-                if starEmitter then starEmitter:Destroy() starEmitter = nil end
-                Lighting.ClockTime = oldClock
-                Lighting.Brightness = oldBrightness
-                for _, v in pairs(Lighting:GetChildren()) do if v:IsA("Sky") then v:Destroy() end end
-                if oldSky then oldSky:Clone().Parent = Lighting end
-            end
-        end
-    })
+			local ground
+			for _, entry in pairs(heightBuckets) do
+				if not ground or entry.area > ground.area then
+					ground = entry
+				end
+			end
+			if ground then
+				return ground.weightedHeight / ground.area
+			end
 
-    -- TOGGLES (The Basics)
-    VoidOcean:CreateToggle({
-        Name = "Rainbow Mode",
-        Function = function(callback)
-            task.spawn(function()
-                while callback and VoidOcean.Enabled do
-                    local hue = (tick() % settings.RainbowSpeed) / settings.RainbowSpeed
-                    local color = Color3.fromHSV(hue, 0.7, 1)
-                    Terrain.WaterColor = color
-                    if starEmitter then starEmitter.Color = ColorSequence.new(color) end
-                    RunService.Heartbeat:Wait()
-                end
-                if not callback and VoidOcean.Enabled then 
-                    Terrain.WaterColor = Color3.fromRGB(12, 60, 110) 
-                end
-            end)
-        end
-    })
+			local root = lplr.Character and lplr.Character:FindFirstChild('HumanoidRootPart')
+			if root then
+				local rayParams = RaycastParams.new()
+				rayParams.FilterType = Enum.RaycastFilterType.Include
+				rayParams.FilterDescendantsInstances = {map}
+				local hit = workspace:Raycast(root.Position + Vector3.new(0, 200, 0), Vector3.new(0, -1000, 0), rayParams)
+				if hit then
+					return hit.Position.Y
+				end
+			end
+		end
 
-    VoidOcean:CreateToggle({
-        Name = "Realistic Sky",
-        Function = function(callback)
-            if callback and VoidOcean.Enabled then
-                for _, v in pairs(Lighting:GetChildren()) do if v:IsA("Sky") then v:Destroy() end end
-                local sky = Instance.new("Sky")
-                sky.SkyboxBk = "rbxassetid://10128014521"; sky.SkyboxDn = "rbxassetid://10128014839"; sky.SkyboxFt = "rbxassetid://10128015112"
-                sky.SkyboxLf = "rbxassetid://10128015385"; sky.SkyboxRt = "rbxassetid://10128015582"; sky.SkyboxUp = "rbxassetid://10128015814"
-                sky.MoonAngularSize = settings.MoonSize
-                sky.Parent = Lighting
-            elseif not callback then
-                for _, v in pairs(Lighting:GetChildren()) do if v:IsA("Sky") then v:Destroy() end end
-                if oldSky then oldSky:Clone().Parent = Lighting end
-            end
-        end
-    })
+		local root = lplr.Character and lplr.Character:FindFirstChild('HumanoidRootPart')
+		local humanoid = lplr.Character and lplr.Character:FindFirstChildOfClass('Humanoid')
+		if root and humanoid and humanoid.FloorMaterial ~= Enum.Material.Air then
+			return root.Position.Y - humanoid.HipHeight - root.Size.Y / 2
+		end
 
-    -- THE SLIDER SUITE (Control Everything)
-    
-    -- Ocean Controls
-    VoidOcean:CreateSlider({ Name = "Ocean Height", Min = -150, Max = 50, Default = -40, Function = function(val)
-        settings.Height = val
-        if VoidOcean.Enabled and currentWaterCFrame then
-            Terrain:FillBlock(currentWaterCFrame, waterSize, Enum.Material.Air)
-            local root = lplr.Character and lplr.Character:FindFirstChild("HumanoidRootPart")
-            currentWaterCFrame = CFrame.new(root and root.Position.X or 0, val, root and root.Position.Z or 0)
-            Terrain:FillBlock(currentWaterCFrame, waterSize, Enum.Material.Water)
-        end
-    end})
+		return root and root.Position.Y - 3 or -30
+	end
 
-    VoidOcean:CreateSlider({ Name = "Water Transparency", Min = 0, Max = 1, Default = 0.8, Function = function(val)
-        settings.Transparency = val
-        if VoidOcean.Enabled then Terrain.WaterTransparency = val end
-    end})
+	local VoidOcean = vape.Categories.Render:CreateModule({
+		Name = 'VoidOcean',
+		Function = function(callback)
+			if callback then
+				oldWaterSettings = {
+					Color = Terrain.WaterColor,
+					Reflectance = Terrain.WaterReflectance,
+					WaveSpeed = Terrain.WaterWaveSpeed,
+					WaveSize = Terrain.WaterWaveSize,
+					Transparency = Terrain.WaterTransparency
+				}
+				Terrain.WaterColor = Color3.fromRGB(12, 60, 110)
+				Terrain.WaterReflectance = 0.8
+				Terrain.WaterWaveSpeed = 8
+				Terrain.WaterWaveSize = 0
+				Terrain.WaterTransparency = 0.8
 
-    VoidOcean:CreateSlider({ Name = "Wave Speed", Min = 0, Max = 100, Default = 8, Function = function(val) 
-        settings.WaveSpeed = val 
-        if VoidOcean.Enabled then Terrain.WaterWaveSpeed = val end 
-    end})
-
-    -- Lighting Controls (Darkness/Brightness)
-    VoidOcean:CreateSlider({ Name = "Time (Darkness)", Min = 0, Max = 24, Default = 14, Function = function(val)
-        settings.ClockTime = val
-        if VoidOcean.Enabled then 
-            Lighting.ClockTime = val 
-            -- Auto-handle Stars if it gets dark
-            local root = lplr.Character and lplr.Character:FindFirstChild("HumanoidRootPart")
-            if (val < 6 or val > 18) and not starEmitter and root then
-                starEmitter = Instance.new("ParticleEmitter", root)
-                starEmitter.Texture = "rbxassetid://5030434751"
-                starEmitter.Size = NumberSequence.new(settings.StarSize, 0)
-                starEmitter.Rate = settings.StarAmount
-            elseif (val >= 6 and val <= 18) and starEmitter then
-                starEmitter:Destroy() starEmitter = nil
-            end
-        end
-    end})
-
-    VoidOcean:CreateSlider({ Name = "World Brightness", Min = 0, Max = 10, Default = 2, Function = function(val)
-        settings.Brightness = val
-        if VoidOcean.Enabled then Lighting.Brightness = val end
-    end})
-
-    -- Sky & Moon Controls
-    VoidOcean:CreateSlider({ Name = "Moon Size", Min = 0, Max = 100, Default = 20, Function = function(val)
-        settings.MoonSize = val
-        local sky = Lighting:FindFirstChildOfClass("Sky")
-        if sky then sky.MoonAngularSize = val end
-    end})
-
-    -- Star Controls
-    VoidOcean:CreateSlider({ Name = "Star Size", Min = 0.1, Max = 10, Default = 0.5, Function = function(val)
-        settings.StarSize = val
-        if starEmitter then starEmitter.Size = NumberSequence.new(val, 0) end
-    end})
-
-    VoidOcean:CreateSlider({ Name = "Star Amount", Min = 0, Max = 500, Default = 50, Function = function(val)
-        settings.StarAmount = val
-        if starEmitter then starEmitter.Rate = val end
-    end})
-
+				local map = getMap()
+				local root = lplr.Character and lplr.Character:FindFirstChild('HumanoidRootPart')
+				local surfaceY = getMapGroundHeight(map) - 2
+				currentWaterCFrame = CFrame.new(root and root.Position.X or 0, surfaceY - waterSize.Y / 2, root and root.Position.Z or 0)
+				Terrain:FillBlock(currentWaterCFrame, waterSize, Enum.Material.Water)
+			else
+				if currentWaterCFrame then
+					Terrain:FillBlock(currentWaterCFrame, waterSize, Enum.Material.Air)
+					currentWaterCFrame = nil
+				end
+				if oldWaterSettings then
+					Terrain.WaterColor = oldWaterSettings.Color
+					Terrain.WaterReflectance = oldWaterSettings.Reflectance
+					Terrain.WaterWaveSpeed = oldWaterSettings.WaveSpeed
+					Terrain.WaterWaveSize = oldWaterSettings.WaveSize
+					Terrain.WaterTransparency = oldWaterSettings.Transparency
+					oldWaterSettings = nil
+				end
+			end
+		end
+	})
 end)
 run(function()
     local Disabler
@@ -34554,7 +34502,7 @@ run(function()
         end
     end
 
-    FFlag = vape.Categories.Legit:CreateModule({
+    FFlag = vape.Categories.Utility:CreateModule({
         Name = 'FFlag Editor',
         Disabled = not hasSetFFlag,
         DisabledTooltip = 'ur executor (' .. ({identifyexecutor()})[1] .. ') doesnt have setfflag – module disabled',
