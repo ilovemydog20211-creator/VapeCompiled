@@ -27751,7 +27751,7 @@ run(function()
     local Disabler
 
     local DEFAULT_SPEED = 23
-    local WIND_SPEED = 40
+    local WIND_SPEED = 34
     local BOOST_SPEED = 40
     local SKATE_SPEED = 20
 
