@@ -10,6 +10,7 @@
 - `.key [@user] [duration]` issues a key by DM. Without a mention it issues a key to
   the command author. The default duration is 30 days.
 - `.key revoke @user`, `.revoke @user`, and `.revoke all` revoke keys.
+- `.delete all` deletes/revokes every active key.
 - `.kick @user` revokes that user's key. An already-running script checks every 30
   seconds and kicks its own Roblox client after the service confirms the revocation.
 - `.logs` creates or secures the private `#key-usage-logs` channel.

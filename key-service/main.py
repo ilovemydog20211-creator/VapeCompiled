@@ -395,6 +395,7 @@ def main():
                 "(default: 30 days; 1 minute to 1 month)\n"
                 "`.key revoke @user` — revoke one user's key\n"
                 "`.revoke @user` or `.revoke all` — revoke keys\n"
+                "`.delete all` — delete all active keys\n"
                 "`.kick @user` — revoke their key and kick a running client\n"
                 "`.logs` — create or secure the private key audit channel\n\n"
                 "Durations: `1m`, `1h`, `7d`, `1w`, or `1 month`.\n"
@@ -469,21 +470,24 @@ def main():
             )
             return
 
+        delete_all_match = re.fullmatch(r"[.,]delete\s+all", command)
         revoke_match = re.fullmatch(r"[.,]revoke\s+(all|<@!?(\d+)>)", command)
         key_revoke_match = re.fullmatch(
             r"[.,]key\s+revoke\s+<@!?(\d+)>",
             command,
         )
-        if revoke_match or key_revoke_match:
+        if delete_all_match or revoke_match or key_revoke_match:
             if not is_server_admin(message):
                 await message.reply("Only server admins can revoke keys.")
                 return
 
-            if revoke_match and revoke_match.group(1) == "all":
+            if delete_all_match or (
+                revoke_match and revoke_match.group(1) == "all"
+            ):
                 count = key_store.revoke_all()
-                await message.reply(f"Revoked all {count} key(s).")
+                await message.reply(f"Deleted all {count} active key(s).")
                 await log_key_event(
-                    "keys_revoked",
+                    "all_keys_deleted",
                     actor_id=message.author.id,
                     count=count,
                 )
