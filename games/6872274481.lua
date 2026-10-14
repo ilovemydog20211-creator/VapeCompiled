@@ -31477,3 +31477,312 @@ run(function()
         end
     })
 end)
+run(function()
+    local TPAura
+    local Range, TPDistance
+    local Targets, Sort
+    local Mouse
+    local realHRP = nil
+    local cloneHRP = nil
+    local hip = nil
+    local tpAuraLoop = nil
+    local tpAuraAttacking = false
+
+    local function rewireAll(char, fromP, toP)
+        if not char or not fromP or not toP then return end
+        local charDesc = char:GetDescendants()
+        -- Joints and Constraints using Part0/Part1
+        for _, v in ipairs(charDesc) do
+            if v:IsA("JointInstance") or v:IsA("NoCollisionConstraint") or v:IsA("WeldConstraint") then
+                if v.Part0 == fromP then v.Part0 = toP end
+                if v.Part1 == fromP then v.Part1 = toP end
+            end
+        end
+        for _, v in ipairs(fromP:GetDescendants()) do
+            if v:IsA("JointInstance") or v:IsA("NoCollisionConstraint") or v:IsA("WeldConstraint") then
+                if v.Part0 == fromP then v.Part0 = toP end
+                if v.Part1 == fromP then v.Part1 = toP end
+            end
+        end
+        
+        -- Constraints using Attachment0/Attachment1
+        for _, v in ipairs(charDesc) do
+            if v:IsA("Constraint") and not v:IsA("NoCollisionConstraint") and not v:IsA("WeldConstraint") then
+                if v.Attachment0 and v.Attachment0:IsDescendantOf(fromP) then
+                    local att = toP:FindFirstChild(v.Attachment0.Name, true)
+                    if att then v.Attachment0 = att end
+                end
+                if v.Attachment1 and v.Attachment1:IsDescendantOf(fromP) then
+                    local att = toP:FindFirstChild(v.Attachment1.Name, true)
+                    if att then v.Attachment1 = att end
+                end
+            end
+        end
+    end
+
+    local function teardownClone()
+        local char = lplr.Character
+
+        local clones = {}
+        local realPart = realHRP or (gameCamera and gameCamera:FindFirstChild("HumanoidRootPart"))
+
+        if not realPart and char then
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") and part.Name == "HumanoidRootPart" and not part:GetAttribute("IsTPAuraClone") then
+                    realPart = part
+                    break
+                end
+            end
+        end
+
+        -- Find all clones
+        if char then
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") and part.Name == "HumanoidRootPart" and part ~= realPart then
+                    table.insert(clones, part)
+                end
+            end
+        end
+        for _, part in ipairs(workspace:GetDescendants()) do
+            if part:IsA("BasePart") and part.Name == "HumanoidRootPart" and part ~= realPart and part.Parent ~= gameCamera then
+                if part:GetAttribute("IsTPAuraClone") or (char and part.Parent == char) then
+                    table.insert(clones, part)
+                end
+            end
+        end
+
+        local mainClone = clones[1] or cloneHRP
+        local restoreCFrame = mainClone and mainClone.CFrame
+
+        if tpAuraLoop then tpAuraLoop:Disconnect() tpAuraLoop = nil end
+        tpAuraAttacking = false
+
+        -- Rewire joints back to realPart
+        if char and realPart then
+            for _, cl in ipairs(clones) do
+                rewireAll(char, cl, realPart)
+            end
+            if cloneHRP then
+                rewireAll(char, cloneHRP, realPart)
+            end
+        end
+
+        -- Put realPart back into char
+        if realPart and char and realPart.Parent ~= char then
+            realPart.Parent = char
+            char.PrimaryPart = realPart
+            realHRP = realPart
+            realPart.Anchored = false
+        elseif realPart and char then
+            char.PrimaryPart = realPart
+            realPart.Anchored = false
+        end
+
+        -- Destroy clones
+        for _, cl in ipairs(clones) do
+            pcall(function() cl:Destroy() end)
+        end
+        if cloneHRP then
+            pcall(function() cloneHRP:Destroy() end)
+        end
+        cloneHRP = nil
+
+        if gameCamera then
+            for _, part in ipairs(gameCamera:GetChildren()) do
+                if part:IsA("BasePart") and part.Name == "HumanoidRootPart" and part ~= realPart then
+                    pcall(function() part:Destroy() end)
+                end
+            end
+        end
+
+        -- Restore position
+        if realPart and restoreCFrame then
+            pcall(function()
+                realPart.CFrame = restoreCFrame
+                realPart.Velocity = Vector3.zero
+            end)
+        end
+
+        if char and char.Parent ~= workspace then
+            char.Parent = workspace
+        end
+
+        if hip and char and char:FindFirstChildWhichIsA("Humanoid") then
+            char.Humanoid.HipHeight = hip
+        end
+
+        if entitylib.character and realPart then
+            entitylib.character.RootPart = realPart
+        end
+
+        realHRP = nil
+        hip = nil
+    end
+
+    local function setupClone()
+        if realHRP and cloneHRP and cloneHRP.Parent and realHRP.Parent then
+            return true
+        end
+
+        teardownClone()
+
+        if not entitylib.isAlive then return false end
+        local char = lplr.Character
+        if not char then return false end
+        realHRP = char:FindFirstChild("HumanoidRootPart")
+        if not realHRP then return false end
+        if not isnetworkowner(realHRP) then return false end
+
+        hip = char.Humanoid.HipHeight
+        cloneHRP = realHRP:Clone()
+        cloneHRP.Name = "HumanoidRootPart"
+        cloneHRP:SetAttribute("IsTPAuraClone", true)
+        cloneHRP.Transparency = realHRP.Transparency
+
+        -- Remove cloned joints from cloneHRP
+        for _, v in ipairs(cloneHRP:GetDescendants()) do
+            if v:IsA("JointInstance") then
+                v:Destroy()
+            end
+        end
+
+        char.Parent = game
+        realHRP.Parent = gameCamera
+        bedwars.QueryUtil:setQueryIgnored(realHRP, true)
+
+        cloneHRP.Parent = char
+        cloneHRP.CFrame = realHRP.CFrame
+        char.PrimaryPart = cloneHRP
+        char.Parent = workspace
+
+        -- Rewire original joints and constraints to cloneHRP
+        rewireAll(char, realHRP, cloneHRP)
+
+        -- Follow loop: smooth sync without BodyVelocity
+        if tpAuraLoop then tpAuraLoop:Disconnect() tpAuraLoop = nil end
+        tpAuraAttacking = false
+        tpAuraLoop = runService.Heartbeat:Connect(function()
+            if realHRP and cloneHRP and not tpAuraAttacking then
+                realHRP.CFrame = cloneHRP.CFrame
+                realHRP.Velocity = cloneHRP.Velocity
+            end
+        end)
+
+        for _, v in ipairs(cloneHRP:GetChildren()) do
+            if v:IsA("BodyVelocity") then v:Destroy() end
+        end
+
+        if entitylib.character then
+            entitylib.character.RootPart = cloneHRP
+        end
+
+        return true
+    end
+
+    TPAura = vape.Categories.Blatant:CreateModule({
+        Name = "TP Aura",
+        Tooltip = "Blinks behind target + makes Killaura hit.",
+        Function = function(callback)
+            if callback then
+                if not setupClone() then
+                    vape:CreateNotification("TP Aura", "Failed to setup clone", 2, "alert")
+                    TPAura:Toggle()
+                    return
+                end
+
+                local lockedTarget = nil
+
+                while TPAura.Enabled do
+                    local char = entitylib.character
+                    if not char or not char.RootPart then
+                        task.wait(0.1)
+                        continue
+                    end
+
+                    if char.RootPart ~= cloneHRP and char.RootPart ~= realHRP then
+                        if not setupClone() then
+                            task.wait(0.1)
+                            continue
+                        end
+                    end
+
+                    if Mouse.Enabled and not inputService:IsMouseButtonPressed(0) then
+                        task.wait(0.1)
+                        continue
+                    end
+
+                    -- Check if locked target died
+                    if lockedTarget then
+                        local hum = lockedTarget.Character and lockedTarget.Character:FindFirstChildWhichIsA("Humanoid")
+                        if not hum or hum.Health <= 0 then lockedTarget = nil end
+                    end
+
+                    -- Find new target
+                    if not lockedTarget then
+                        local plrs = entitylib.AllPosition({
+                            Range = Range.Value,
+                            Wallcheck = Targets.Walls.Enabled,
+                            Part = "RootPart",
+                            Players = Targets.Players.Enabled,
+                            NPCs = Targets.NPCs.Enabled,
+                            Limit = 5,
+                            Sort = sortmethods[Sort.Value]
+                        })
+                        if plrs then
+                            for _, ent in ipairs(plrs) do
+                                if ent and ent.RootPart then
+                                    local hum = ent.Character and ent.Character:FindFirstChildWhichIsA("Humanoid")
+                                    if hum and hum.Health > 0 then
+                                        lockedTarget = ent
+                                        break
+                                    end
+                                end
+                            end
+                        end
+                    end
+
+                    if lockedTarget then
+                        pcall(function()
+                            local targetRoot = lockedTarget.Character.PrimaryPart or lockedTarget.RootPart
+                            local behindPos = targetRoot.Position - (targetRoot.CFrame.LookVector * TPDistance.Value)
+                            
+                            -- Swap root part so Killaura sees the real HRP (behind target)
+                            tpAuraAttacking = true
+                            entitylib.character.RootPart = realHRP
+
+                            -- Teleport real HRP behind target
+                            realHRP.CFrame = CFrame.new(behindPos, targetRoot.Position)
+
+                            -- Give Killaura time to swing
+                            task.wait(0.25)
+
+                            if not TPAura.Enabled then return end
+
+                            -- Return to clone position and restore root part
+                            realHRP.CFrame = cloneHRP.CFrame
+                            entitylib.character.RootPart = cloneHRP
+                            tpAuraAttacking = false
+                        end)
+                    else
+                        tpAuraAttacking = false
+                        entitylib.character.RootPart = cloneHRP
+                    end
+
+                    task.wait(0.1)
+                end
+
+                teardownClone()
+            else
+                teardownClone()
+            end
+        end
+    })
+
+    TPAura:Clean(function() teardownClone() end)
+
+    Targets = TPAura:CreateTargets({Players = true, Walls = true, NPCs = false})
+    Range = TPAura:CreateSlider({Name = "Range", Min = 0, Max = 200, Default = 200})
+    TPDistance = TPAura:CreateSlider({Name = "TP Distance", Min = 1, Max = 10, Default = 3})
+    Sort = TPAura:CreateDropdown({Name = "Sort", List = {"Damage","Threat","Kit","Health","Angle","Distance"}, Default = "Distance"})
+    Mouse = TPAura:CreateToggle({Name = "Require mouse down"})
+end)
