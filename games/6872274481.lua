@@ -3453,6 +3453,63 @@ run(function()
 	local originalScytheAnimation
 	local swordEffectHook
 	local scytheAnimationHook
+	local effectConnections = {}
+	local effectEnabledStates = setmetatable({}, {__mode = 'k'})
+	local watchedCameras = setmetatable({}, {__mode = 'k'})
+	local watchedViewmodels = setmetatable({}, {__mode = 'k'})
+	local effectClasses = {
+		ParticleEmitter = true,
+		Trail = true,
+		Beam = true,
+		Fire = true,
+		Smoke = true,
+		Sparkles = true,
+		Highlight = true,
+		PointLight = true,
+		SpotLight = true,
+		SurfaceLight = true
+	}
+
+	local function disableSwordEffect(instance)
+		if not effectClasses[instance.ClassName] then return end
+
+		local ok, enabled = pcall(function()
+			return instance.Enabled
+		end)
+		if not ok then return end
+		if effectEnabledStates[instance] == nil then
+			effectEnabledStates[instance] = enabled
+		end
+		pcall(function()
+			instance.Enabled = false
+			if instance:IsA('ParticleEmitter') then
+				instance:Clear()
+			end
+		end)
+	end
+
+	local function watchSwordViewmodel(camera)
+		if not RemoveSwordEffects.Enabled or not camera then return end
+		local viewmodel = camera:FindFirstChild('Viewmodel')
+		if not viewmodel then
+			if not watchedCameras[camera] then
+				watchedCameras[camera] = true
+				effectConnections[#effectConnections + 1] = camera.ChildAdded:Connect(function(child)
+					if child.Name == 'Viewmodel' then
+						watchSwordViewmodel(camera)
+					end
+				end)
+			end
+			return
+		end
+		if watchedViewmodels[viewmodel] then return end
+		watchedViewmodels[viewmodel] = true
+
+		for _, descendant in viewmodel:GetDescendants() do
+			disableSwordEffect(descendant)
+		end
+		effectConnections[#effectConnections + 1] = viewmodel.DescendantAdded:Connect(disableSwordEffect)
+	end
 
 	RemoveSwordEffects = vape.Categories.Combat:CreateModule({
 		Name = 'RemoveSwordEffects',
@@ -3476,6 +3533,10 @@ run(function()
 				scytheAnimationHook = function() end
 				bedwars.SwordController.playSwordEffect = swordEffectHook
 				bedwars.ScytheController.playLocalAnimation = scytheAnimationHook
+				watchSwordViewmodel(workspace.CurrentCamera)
+				effectConnections[#effectConnections + 1] = workspace:GetPropertyChangedSignal('CurrentCamera'):Connect(function()
+					watchSwordViewmodel(workspace.CurrentCamera)
+				end)
 			else
 				if bedwars.SwordController.playSwordEffect == swordEffectHook then
 					bedwars.SwordController.playSwordEffect = originalSwordEffect
@@ -3487,9 +3548,23 @@ run(function()
 				originalScytheAnimation = nil
 				swordEffectHook = nil
 				scytheAnimationHook = nil
+				for _, connection in effectConnections do
+					connection:Disconnect()
+				end
+				table.clear(effectConnections)
+				for effect, enabled in effectEnabledStates do
+					if effect.Parent then
+						pcall(function()
+							effect.Enabled = enabled
+						end)
+					end
+					effectEnabledStates[effect] = nil
+				end
+				watchedCameras = setmetatable({}, {__mode = 'k'})
+				watchedViewmodels = setmetatable({}, {__mode = 'k'})
 			end
 		end,
-		Tooltip = 'removes first-person sword and scythe swing effects'
+		Tooltip = 'removes first-person sword and scythe animations, particles, fire, trails, and beams'
 	})
 end)
 
