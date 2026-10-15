@@ -34820,15 +34820,16 @@ run(function()
 			until (hand and hand.tool == item.tool) or tick() - start > 0.5
 			local ctrl = findSourceController(item)
 			if not ctrl then return end
-			if ClickAim.Enabled then
-				runService:BindToRenderStep(aimBindName, Enum.RenderPriority.Camera.Value + 1, function()
+			runService:BindToRenderStep(aimBindName, Enum.RenderPriority.Camera.Value + 2, function()
+				if ClickAim.Enabled then
 					local root = target and target.RootPart
-					if ClickAim.Enabled and root and root.Parent then
-						gameCamera.CFrame = CFrame.lookAt(gameCamera.CFrame.Position, root.Position)
+					local camera = workspace.CurrentCamera
+					if root and root.Parent and camera then
+						camera.CFrame = CFrame.lookAt(camera.CFrame.Position, root.Position)
 					end
-				end)
-				aimBound = true
-			end
+				end
+			end)
+			aimBound = true
 			ctrl:beginHolding(item, nil, ctrl.aimingMaid, false)
 			task.wait(ShootDelay.Value)
 			if AutoShoot.Enabled and store.inventory.hotbarSlot == slot then
