@@ -34731,6 +34731,7 @@ run(function()
 	local ShootDelay
 	local busy = false
 	local readyAt = {}
+	local lastSwordSwing = 0
 	local aimBindName = 'vapeAutoShootAim'
 
 	local function getControllers()
@@ -34805,7 +34806,10 @@ run(function()
 
 	local function shoot(target)
 		local slot, item, source = findProjectileSlot()
-		if not slot then return end
+		if not slot then
+			busy = false
+			return
+		end
 		busy = true
 		store.autoShooting = true
 		local previous = store.inventory.hotbarSlot
@@ -34855,8 +34859,18 @@ run(function()
 		Name = 'AutoShoot',
 		Function = function(callback)
 			if callback then
+				local swordController = bedwars.SwordController
+				local lastAttack = swordController and swordController.lastAttack
+				lastSwordSwing = type(lastAttack) == 'number' and lastAttack or 0
 				repeat
-					if not busy and entitylib.isAlive then
+					local sc = bedwars.SwordController
+					local lastAttack = sc and sc.lastAttack
+					local newSwing = type(lastAttack) == 'number' and lastAttack > lastSwordSwing
+					if type(lastAttack) == 'number' then
+						lastSwordSwing = math.max(lastSwordSwing, lastAttack)
+					end
+					local sinceSwing = newSwing and (workspace:GetServerTimeNow() - lastAttack)
+					if not busy and entitylib.isAlive and store.hand.toolType == 'sword' and newSwing and sinceSwing >= 0 and sinceSwing <= 0.4 then
 						local target = entitylib.EntityPosition({
 							Range = ShootRange.Value,
 							Part = 'RootPart',
@@ -34865,6 +34879,7 @@ run(function()
 							NPCs = ShootTargets.NPCs.Enabled
 						})
 						if target then
+							busy = true
 							task.spawn(shoot, target)
 						end
 					end
@@ -34874,7 +34889,7 @@ run(function()
 				store.autoShooting = false
 			end
 		end,
-		Tooltip = 'switches to your bow and shoots at nearby targets; enable Click Aim to aim while charging and firing'
+		Tooltip = 'switches to your bow and shoots at a nearby target when you swing your sword; enable Click Aim to aim while charging and firing'
 	})
 	ClickAim = AutoShoot:CreateToggle({
 		Name = 'Click Aim',
