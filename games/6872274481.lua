@@ -34726,10 +34726,12 @@ run(function()
 	local ShootTargets
 	local ShootList
 	local ShootRange
+	local ClickAim
 	local SwitchDelay
 	local ShootDelay
 	local busy = false
 	local readyAt = {}
+	local aimBindName = 'vapeAutoShootAim'
 
 	local function getControllers()
 		return (bedwars.KnitClient and bedwars.KnitClient.Controllers) or (bedwars.Knit and bedwars.Knit.Controllers) or {}
@@ -34801,12 +34803,13 @@ run(function()
 		return store.inventory.hotbarSlot == slot
 	end
 
-	local function shoot()
+	local function shoot(target)
 		local slot, item, source = findProjectileSlot()
 		if not slot then return end
 		busy = true
 		store.autoShooting = true
 		local previous = store.inventory.hotbarSlot
+		local aimBound = false
 		local ok = pcall(function()
 			if not selectSlot(slot) then return end
 			local start = tick()
@@ -34817,6 +34820,15 @@ run(function()
 			until (hand and hand.tool == item.tool) or tick() - start > 0.5
 			local ctrl = findSourceController(item)
 			if not ctrl then return end
+			if ClickAim.Enabled then
+				runService:BindToRenderStep(aimBindName, Enum.RenderPriority.Camera.Value + 1, function()
+					local root = target and target.RootPart
+					if ClickAim.Enabled and root and root.Parent then
+						gameCamera.CFrame = CFrame.lookAt(gameCamera.CFrame.Position, root.Position)
+					end
+				end)
+				aimBound = true
+			end
 			ctrl:beginHolding(item, nil, ctrl.aimingMaid, false)
 			task.wait(ShootDelay.Value)
 			if AutoShoot.Enabled and store.inventory.hotbarSlot == slot then
@@ -34827,6 +34839,9 @@ run(function()
 			end
 			task.wait(SwitchDelay.Value)
 		end)
+		if aimBound then
+			runService:UnbindFromRenderStep(aimBindName)
+		end
 		if previous and store.inventory.hotbarSlot ~= previous then
 			pcall(selectSlot, previous)
 		end
@@ -34849,7 +34864,7 @@ run(function()
 							NPCs = ShootTargets.NPCs.Enabled
 						})
 						if target then
-							task.spawn(shoot)
+							task.spawn(shoot, target)
 						end
 					end
 					task.wait(0.05)
@@ -34858,7 +34873,12 @@ run(function()
 				store.autoShooting = false
 			end
 		end,
-		Tooltip = 'switches to ur bow and shoots for u when someone is in range, works on mobile too; AimAssist Click Aim can aim while it fires'
+		Tooltip = 'switches to your bow and shoots at nearby targets; enable Click Aim to aim while charging and firing'
+	})
+	ClickAim = AutoShoot:CreateToggle({
+		Name = 'Click Aim',
+		Default = false,
+		Tooltip = 'aims at the selected target while charging and firing'
 	})
 	ShootTargets = AutoShoot:CreateTargets({
 		Players = true,
