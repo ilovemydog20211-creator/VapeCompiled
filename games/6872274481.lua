@@ -3105,7 +3105,7 @@ run(function()
 					if ClickAim and ClickAim.Enabled then
 						local sc = bedwars.SwordController
 						local lastAttack = sc and rawget(sc, 'lastAttack')
-						if not lastAttack or (workspace:GetServerTimeNow() - lastAttack) >= 0.4 then
+						if not store.autoShooting and (not lastAttack or (workspace:GetServerTimeNow() - lastAttack) >= 0.4) then
 							return
 						end
 					end
@@ -34858,7 +34858,7 @@ run(function()
 				store.autoShooting = false
 			end
 		end,
-		Tooltip = 'switches to ur bow and shoots for u when someone is in range, works on mobile too'
+		Tooltip = 'switches to ur bow and shoots for u when someone is in range, works on mobile too; AimAssist Click Aim can aim while it fires'
 	})
 	ShootTargets = AutoShoot:CreateTargets({
 		Players = true,
