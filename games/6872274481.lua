@@ -3069,6 +3069,7 @@ run(function()
 	local function isInAngle(ent)
 		if not ent or not ent.RootPart then return false end
 		if not entitylib.character or not entitylib.character.RootPart then return false end
+		if AngleSlider.Value >= 360 then return true end
 		local delta = (ent.RootPart.Position - entitylib.character.RootPart.Position)
 		local rawFacing = (getgenv().ViewMode and getgenv().ViewMode.Value == 'Third Person') and gameCamera.CFrame.LookVector or entitylib.character.RootPart.CFrame.LookVector
 		local localFacing = rawFacing * Vector3.new(1, 0, 1)
