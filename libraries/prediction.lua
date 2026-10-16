@@ -234,64 +234,79 @@ function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, tar
 	return module.NewTrajectory(origin, Vector3.zero, Vector3.new(0, -gravity, 0), targetPos, targetVelocity, Vector3.zero, projectileSpeed)
 end]]
 
-function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, targetVelocity, playerGravity, playerHeight, playerJump, params)
+function module.SolveTrajectory(origin, projectileSpeed, gravity, targetPos, targetVelocity, playerGravity, playerHeight, playerJump, params, targetAirborne)
+	if projectileSpeed <= 0 then
+		return
+	end
+
 	local disp = targetPos - origin
 	local p, q, r = targetVelocity.X, targetVelocity.Y, targetVelocity.Z
 	local h, j, k = disp.X, disp.Y, disp.Z
-	local l = -.5 * gravity
+	local targetGravity = targetAirborne and playerGravity and playerGravity > 0 and playerGravity or 0
+	local relativeGravity = gravity - targetGravity
+	local halfGravity = relativeGravity * 0.5
 
-	--attemped gravity calculation, may return to it in the future.
-	if math.abs(q) > 0.01 and playerGravity and playerGravity > 0 then
-		local estTime = (disp.Magnitude / projectileSpeed)
-		local origq = q
-		local origj = j
-		for i = 1, 100 do
-			q -= (.5 * playerGravity) * estTime
-			local velo = targetVelocity * 0.016
-			local ray = workspace.Raycast(workspace, Vector3.new(targetPos.X, targetPos.Y, targetPos.Z), Vector3.new(velo.X, (q * estTime) - playerHeight, velo.Z), params)
-			if ray then
-				local newTarget = ray.Position + Vector3.new(0, playerHeight, 0)
-				estTime -= math.sqrt(((targetPos - newTarget).Magnitude * 2) / playerGravity)
-				targetPos = newTarget
-				j = (targetPos - origin).Y
-				q = 0
-				break
+	if math.abs(relativeGravity) < 1e-4 then
+		local a = targetVelocity:Dot(targetVelocity) - projectileSpeed * projectileSpeed
+		local b = 2 * disp:Dot(targetVelocity)
+		local c = disp:Dot(disp)
+		local flightTime
+
+		if math.abs(a) < 1e-8 then
+			if math.abs(b) < 1e-8 then
+				return
+			end
+			flightTime = -c / b
+		else
+			local discriminant = b * b - 4 * a * c
+			if discriminant < 0 then
+				return
+			end
+			local root = math.sqrt(discriminant)
+			local q = -0.5 * (b + (b >= 0 and root or -root))
+			local first = q / a
+			local second = q ~= 0 and c / q or first
+			if first > 0 and second > 0 then
+				flightTime = math.min(first, second)
+			elseif first > 0 then
+				flightTime = first
+			elseif second > 0 then
+				flightTime = second
 			else
-				break
+				return
 			end
 		end
+
+		if flightTime <= 0 then
+			return
+		end
+		return origin + disp / flightTime + targetVelocity
 	end
 
 	local solutions = module.solveQuartic(
-		l*l,
-		-2*q*l,
-		q*q - 2*j*l - projectileSpeed*projectileSpeed + p*p + r*r,
+		halfGravity * halfGravity,
+		2 * q * halfGravity,
+		q*q + 2*j*halfGravity - projectileSpeed*projectileSpeed + p*p + r*r,
 		2*j*q + 2*h*p + 2*k*r,
 		j*j + h*h + k*k
 	)
 	if solutions then
-		local posRoots = table.create(2)
-		for _, v in solutions do --filter out the negative roots
-			if v > 0 then
+		local posRoots = {}
+		for i = 1, 4 do
+			local v = solutions[i]
+			if v and v > 0 and v == v and math.abs(v) < math.huge then
 				table.insert(posRoots, v)
 			end
 		end
-
-		posRoots[1] = posRoots[1]
+		table.sort(posRoots)
 
 		if posRoots[1] then
 			local t = posRoots[1]
 			local d = (h + p*t)/t
-			local e = (j + q*t - l*t*t)/t
+			local e = (j + q*t + halfGravity*t*t)/t
 			local f = (k + r*t)/t
 			return origin + Vector3.new(d, e, f)
 		end
-	elseif gravity == 0 then
-		local t = (disp.Magnitude / projectileSpeed)
-		local d = (h + p*t)/t
-		local e = (j + q*t - l*t*t)/t
-		local f = (k + r*t)/t
-		return origin + Vector3.new(d, e, f)
 	end
 end
 
