@@ -3070,10 +3070,15 @@ run(function()
 		if not ent or not ent.RootPart then return false end
 		if not entitylib.character or not entitylib.character.RootPart then return false end
 		local delta = (ent.RootPart.Position - entitylib.character.RootPart.Position)
-		local localFacing = ((getgenv().ViewMode and getgenv().ViewMode.Value == 'Third Person') and gameCamera.CFrame.LookVector or entitylib.character.RootPart.CFrame.LookVector) * Vector3.new(1, 0, 1)
+		local rawFacing = (getgenv().ViewMode and getgenv().ViewMode.Value == 'Third Person') and gameCamera.CFrame.LookVector or entitylib.character.RootPart.CFrame.LookVector
+		local localFacing = rawFacing * Vector3.new(1, 0, 1)
 		local flatDelta = delta * Vector3.new(1, 0, 1)
 		if flatDelta.Magnitude <= 0.001 then return false end
-		local angle = math.acos(math.clamp(localFacing:Dot(flatDelta.Unit), -1, 1))
+		if localFacing.Magnitude <= 0.001 then
+			localFacing = entitylib.character.RootPart.CFrame.LookVector * Vector3.new(1, 0, 1)
+		end
+		if localFacing.Magnitude <= 0.001 then return false end
+		local angle = math.acos(math.clamp(localFacing.Unit:Dot(flatDelta.Unit), -1, 1))
 		return angle < math.rad(AngleSlider.Value / 2)
 	end
 
@@ -3097,7 +3102,7 @@ run(function()
 					end
 
 					local autoShootingProjectile = store.autoShooting and isHoldingBowCrossbow()
-					local validWeapon = store.hand.toolType == 'sword' or autoShootingProjectile
+					local validWeapon = (store.hand and store.hand.toolType == 'sword') or autoShootingProjectile
 					if WorkWithProjectiles and WorkWithProjectiles.Enabled then
 						validWeapon = validWeapon or isHoldingBowCrossbow()
 					end
@@ -3152,7 +3157,7 @@ run(function()
 						end
 
 						if not ent then
-							local found = entitylib.EntityPosition({
+							local candidates = entitylib.AllPosition({
 								Range = Distance.Value,
 								Part = 'RootPart',
 								Wallcheck = Targets.Walls.Enabled,
@@ -3160,6 +3165,13 @@ run(function()
 								NPCs = Targets.NPCs.Enabled,
 								Sort = sortmethods[Sort.Value]
 							})
+							local found
+							for _, candidate in candidates do
+								if isEntValid(candidate) and isInAngle(candidate) then
+									found = candidate
+									break
+								end
+							end
 
 							if found then
 								lastValidTarget = found
