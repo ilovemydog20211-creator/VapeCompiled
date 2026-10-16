@@ -6462,7 +6462,6 @@ run(function()
 					local meta = projmeta:getProjectileMeta()
 					local lifetime = (worldmeta and meta.predictionLifetimeSec or meta.lifetimeSec or 3)
 					local gravityMultiplier = projmeta.gravityMultiplier or 1
-					if gravityMultiplier == 0 then gravityMultiplier = 1 end
 					local gravity = (meta.gravitationalAcceleration or 196.2) * gravityMultiplier
 					local maxDraw = tonumber(projmeta.maxStrengthChargeSec) or tonumber(projmeta.maxDrawDurationSeconds) or tonumber(meta.maxDrawDurationSeconds) or (projmeta.projectile:find('arrow') and 0.65 or 0.8)
 					local drawPct = AutoCharge.Enabled and (skidPAChargePercent.Value / 100) or 1
@@ -6492,12 +6491,14 @@ run(function()
 					local bowRelZ = bedwars.BowConstantsTable.RelZ or 0
 					local rawVel = plr.RootPart.AssemblyLinearVelocity or plr.RootPart.Velocity or Vector3.zero
 					local _velKey = tostring(plr)
-					if not _paVelHistory[_velKey] then
-						_paVelHistory[_velKey] = rawVel
-					else
-						_paVelHistory[_velKey] = _paVelHistory[_velKey]:Lerp(rawVel, 0.35)
+					local previousVel = _paVelHistory[_velKey]
+					local smoothVel = rawVel
+					if previousVel then
+						local velocityChange = (rawVel - previousVel).Magnitude
+						local smoothing = math_clamp(0.35 + velocityChange / 50, 0.35, 0.8)
+						smoothVel = previousVel:Lerp(rawVel, smoothing)
 					end
-					local smoothVel = _paVelHistory[_velKey]
+					_paVelHistory[_velKey] = smoothVel
 					smoothVel = Vector3.new(smoothVel.X, rawVel.Y, smoothVel.Z)
 
 					local aimTarget = targetBodyPart.Position
@@ -34908,8 +34909,8 @@ run(function()
 	ShootRange = AutoShoot:CreateSlider({
 		Name = 'Range',
 		Min = 5,
-		Max = 100,
-		Default = 50,
+		Max = 100000000000000000000000000,
+		Default = 67,
 		Suffix = function(val)
 			return val == 1 and 'stud' or 'studs'
 		end
