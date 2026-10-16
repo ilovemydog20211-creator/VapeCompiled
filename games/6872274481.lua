@@ -3114,7 +3114,8 @@ run(function()
 					if ClickAim and ClickAim.Enabled then
 						local sc = bedwars.SwordController
 						local lastAttack = sc and rawget(sc, 'lastAttack')
-						if not store.autoShooting and (not lastAttack or (workspace:GetServerTimeNow() - lastAttack) >= 0.4) then
+						local holdingAttack = inputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+						if not store.autoShooting and not holdingAttack and (not lastAttack or (workspace:GetServerTimeNow() - lastAttack) >= 0.4) then
 							return
 						end
 					end
