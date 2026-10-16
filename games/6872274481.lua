@@ -2985,7 +2985,11 @@ run(function()
 		Function = function(callback)
 			if callback then
 				AimAssist:Clean(runService.Heartbeat:Connect(function(dt)
-					if entitylib.isAlive and store.hand.toolType == 'sword' and ((not ClickAim.Enabled) or (tick() - bedwars.SwordController.lastSwing) < 0.4) then
+					local swordController = bedwars.SwordController
+					local lastAttack = swordController and swordController.lastAttack
+					local sinceAttack = type(lastAttack) == 'number' and (workspace:GetServerTimeNow() - lastAttack)
+					local clickedRecently = sinceAttack and sinceAttack >= 0 and sinceAttack < 0.4
+					if entitylib.isAlive and store.hand and store.hand.toolType == 'sword' and ((not ClickAim.Enabled) or clickedRecently) then
 						local ent = not KillauraTarget.Enabled and entitylib.EntityPosition({
 							Range = Distance.Value,
 							Part = 'RootPart',
