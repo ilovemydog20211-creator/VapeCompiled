@@ -2974,405 +2974,85 @@ run(function()
 	local Targets
 	local Sort
 	local AimSpeed
-	local Smoothness
-	local SmoothnessToggle
 	local Distance
 	local AngleSlider
+	local StrafeIncrease
 	local KillauraTarget
 	local ClickAim
-	local ShopCheck
-	local AimPart
-	local ViewMode
-	local PriorityMode
-	local ShakeToggle
-	local ShakeAmount
-	local WorkWithProjectiles
-	local ProjectileDistance
-	local activeRange = 25
-
-	local function getHeldProjectileMeta()
-		local tool = store.hand and store.hand.tool
-		local itemMeta = tool and bedwars.ItemMeta[tool.Name]
-		local source = itemMeta and itemMeta.projectileSource
-		if not source or not source.projectileType then return nil end
-		local ammo = tool.Name
-		if source.ammoItemTypes and #source.ammoItemTypes > 0 then
-			ammo = nil
-			for _, item in store.inventory.inventory.items do
-				if table.find(source.ammoItemTypes, item.itemType) then
-					ammo = item.itemType
-					break
-				end
-			end
-		end
-		if not ammo then return nil end
-		local ok, projType = pcall(source.projectileType, ammo)
-		local projMeta = ok and projType and bedwars.ProjectileMeta[projType]
-		if projMeta and type(projMeta.launchVelocity) == 'number' then
-			return projMeta
-		end
-		return nil
-	end
-	local lockedTarget = nil
-	local lastValidTarget = nil
-	local lastValidTime = 0
-	local GRACE_PERIOD = 0.15
-	local rng = Random.new()
-	local shakeTime = 0
-	local shakeSeed = rng:NextNumber() * 1000
-
-	local function getAimAlpha(speedVal, smoothVal, dt)
-		local baseAlpha = math.clamp(speedVal * 0.025, 0.005, 0.98)
-		if smoothVal then
-			local smoothFactor = math.max(1 - ((smoothVal - 1) / 9) * 0.85, 0.05)
-			baseAlpha = baseAlpha * smoothFactor
-		end
-		return 1 - (1 - baseAlpha) ^ (dt * 60)
-	end
-
-	local function getClosestPartToCursor(character)
-		local mousePos = inputService.TouchEnabled and (gameCamera.ViewportSize / 2) or inputService:GetMouseLocation()
-		local mouseRay = gameCamera:ViewportPointToRay(mousePos.X, mousePos.Y, 0)
-		local bestAngle = math.huge
-		local bestPart = nil
-		local partNames = {
-			'Head', 'UpperTorso', 'LowerTorso', 'HumanoidRootPart',
-			'LeftUpperArm', 'RightUpperArm', 'LeftLowerArm', 'RightLowerArm',
-			'LeftUpperLeg', 'RightUpperLeg', 'LeftLowerLeg', 'RightLowerLeg',
-			'LeftFoot', 'RightFoot', 'LeftHand', 'RightHand'
-		}
-		for _, partName in partNames do
-			local part = character:FindFirstChild(partName)
-			if part then
-				local dirToPart = (part.Position - mouseRay.Origin).Unit
-				local angle = math.acos(math.clamp(mouseRay.Direction:Dot(dirToPart), -1, 1))
-				if angle < bestAngle then
-					bestAngle = angle
-					bestPart = part
-				end
-			end
-		end
-		return bestPart
-	end
-
-	local function isEntValid(ent)
-		if not ent or not ent.RootPart or not ent.Character or not ent.Character.Parent then return false end
-		if not entitylib.isAlive or not entitylib.character or not entitylib.character.RootPart then return false end
-		local hum = ent.Character:FindFirstChildOfClass('Humanoid')
-		if not hum or hum.Health <= 0 then return false end
-		local dist = (ent.RootPart.Position - entitylib.character.RootPart.Position).Magnitude
-		if dist > Distance.Value then return false end
-		if not isEnemy(ent) then return false end
-		return true
-	end
-
-	local function isInAngle(ent)
-		if not ent or not ent.RootPart then return false end
-		if not entitylib.character or not entitylib.character.RootPart then return false end
-		if AngleSlider.Value >= 360 then return true end
-		local delta = (ent.RootPart.Position - entitylib.character.RootPart.Position)
-		local rawFacing = (getgenv().ViewMode and getgenv().ViewMode.Value == 'Third Person') and gameCamera.CFrame.LookVector or entitylib.character.RootPart.CFrame.LookVector
-		local localFacing = rawFacing * Vector3.new(1, 0, 1)
-		local flatDelta = delta * Vector3.new(1, 0, 1)
-		if flatDelta.Magnitude <= 0.001 then return false end
-		if localFacing.Magnitude <= 0.001 then
-			localFacing = entitylib.character.RootPart.CFrame.LookVector * Vector3.new(1, 0, 1)
-		end
-		if localFacing.Magnitude <= 0.001 then return false end
-		local angle = math.acos(math.clamp(localFacing.Unit:Dot(flatDelta.Unit), -1, 1))
-		return angle < math.rad(AngleSlider.Value / 2)
-	end
-
+	
 	AimAssist = vape.Categories.Combat:CreateModule({
 		Name = 'AimAssist',
 		Function = function(callback)
 			if callback then
-				lockedTarget = nil
-				lastValidTarget = nil
-				lastValidTime = 0
-				shakeTime = 0
-				local aimBindName = 'vapeAimAssist'
-				AimAssist:Clean(function()
-					pcall(function() runService:UnbindFromRenderStep(aimBindName) end)
-				end)
-				runService:BindToRenderStep(aimBindName, Enum.RenderPriority.Camera.Value + 1, (function(dt)
-
-					if not entitylib.isAlive or not entitylib.character or not entitylib.character.RootPart then
-						lockedTarget = nil
-						return
-					end
-
-					local autoShootingProjectile = store.autoShooting and isHoldingBowCrossbow()
-					local validWeapon = (store.hand and store.hand.toolType == 'sword') or autoShootingProjectile
-					if WorkWithProjectiles and WorkWithProjectiles.Enabled then
-						validWeapon = validWeapon or isHoldingBowCrossbow()
-					end
-					if not validWeapon then
-						return
-					end
-
-					if ClickAim and ClickAim.Enabled then
-						local sc = bedwars.SwordController
-						local lastAttack = sc and rawget(sc, 'lastAttack')
-						local holdingAttack = inputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
-						if not store.autoShooting and not holdingAttack and (not lastAttack or (workspace:GetServerTimeNow() - lastAttack) >= 0.4) then
-							return
+				AimAssist:Clean(runService.Heartbeat:Connect(function(dt)
+					if entitylib.isAlive and store.hand.toolType == 'sword' and ((not ClickAim.Enabled) or (tick() - bedwars.SwordController.lastSwing) < 0.4) then
+						local ent = not KillauraTarget.Enabled and entitylib.EntityPosition({
+							Range = Distance.Value,
+							Part = 'RootPart',
+							Wallcheck = Targets.Walls.Enabled,
+							Players = Targets.Players.Enabled,
+							NPCs = Targets.NPCs.Enabled,
+							Sort = sortmethods[Sort.Value]
+						}) or store.KillauraTarget
+	
+						if ent then
+							local delta = (ent.RootPart.Position - entitylib.character.RootPart.Position)
+							local localfacing = entitylib.character.RootPart.CFrame.LookVector * Vector3.new(1, 0, 1)
+							local angle = math.acos(localfacing:Dot((delta * Vector3.new(1, 0, 1)).Unit))
+							if angle >= (math.rad(AngleSlider.Value) / 2) then return end
+							targetinfo.Targets[ent] = tick() + 1
+							gameCamera.CFrame = gameCamera.CFrame:Lerp(CFrame.lookAt(gameCamera.CFrame.p, ent.RootPart.Position), (AimSpeed.Value + (StrafeIncrease.Enabled and (inputService:IsKeyDown(Enum.KeyCode.A) or inputService:IsKeyDown(Enum.KeyCode.D)) and 10 or 0)) * dt)
 						end
 					end
-
-					local inFirstPerson = isFirstPerson()
-					if ViewMode.Value == 'First Person' and not inFirstPerson then return end
-					if ViewMode.Value == 'Third Person' and inFirstPerson then return end
-
-					if ShopCheck and ShopCheck.Enabled then
-						if isGUIOpen() then
-							lockedTarget = nil
-							return
-						end
-					end
-
-					local ent = nil
-
-					if store.autoShooting and autoShootTarget and isEntValid(autoShootTarget) then
-						ent = autoShootTarget
-						lastValidTarget = ent
-						lastValidTime = tick()
-						if PriorityMode and PriorityMode.Enabled then
-							lockedTarget = ent
-						end
-					elseif KillauraTarget and KillauraTarget.Enabled then
-						local ka = store.KillauraTarget
-						if ka and ka.RootPart and ka.Character and ka.Character.Parent then
-							local hum = ka.Character:FindFirstChildOfClass('Humanoid')
-							local dist = ka.RootPart and entitylib.character and entitylib.character.RootPart and (ka.RootPart.Position - entitylib.character.RootPart.Position).Magnitude
-							if hum and hum.Health > 0 and dist and dist <= Distance.Value then
-								ent = ka
-							end
-						end
-					else
-						if PriorityMode and PriorityMode.Enabled and lockedTarget then
-							if isEntValid(lockedTarget) and isInAngle(lockedTarget) then
-								ent = lockedTarget
-							else
-								lockedTarget = nil
-							end
-						end
-
-						if not ent then
-							local candidates = entitylib.AllPosition({
-								Range = Distance.Value,
-								Part = 'RootPart',
-								Wallcheck = Targets.Walls.Enabled,
-								Players = Targets.Players.Enabled,
-								NPCs = Targets.NPCs.Enabled,
-								Sort = sortmethods[Sort.Value]
-							})
-							local found
-							for _, candidate in candidates do
-								if isEntValid(candidate) and isInAngle(candidate) then
-									found = candidate
-									break
-								end
-							end
-
-							if found then
-								lastValidTarget = found
-								lastValidTime = tick()
-								ent = found
-							elseif lastValidTarget and (tick() - lastValidTime) < GRACE_PERIOD then
-								local hum = lastValidTarget.Character and lastValidTarget.Character:FindFirstChildOfClass('Humanoid')
-								if hum and hum.Health > 0 and lastValidTarget.Character.Parent and isInAngle(lastValidTarget) then
-									ent = lastValidTarget
-								else
-									lastValidTarget = nil
-								end
-							end
-
-							if ent and PriorityMode and PriorityMode.Enabled then
-								lockedTarget = ent
-							end
-						end
-					end	
-
-					if not ent then return end
-
-					if not (KillauraTarget and KillauraTarget.Enabled) then
-						if not isEntValid(ent) then
-							if PriorityMode and PriorityMode.Enabled then lockedTarget = nil end
-							lastValidTarget = nil
-							return
-						end
-						if not (store.autoShooting and autoShootTarget == ent) and not isInAngle(ent) then
-							if PriorityMode and PriorityMode.Enabled then lockedTarget = nil end
-							return
-						end
-					end
-
-					targetinfo.Targets[ent] = tick() + 1
-
-					local aimPosition
-					if AimPart.Value == 'Head' then
-						local head = ent.Character and ent.Character:FindFirstChild('Head')
-						aimPosition = head and head.Position or ent.RootPart.Position
-					elseif AimPart.Value == 'Torso' then
-						local torso = ent.Character and (ent.Character:FindFirstChild('UpperTorso') or ent.Character:FindFirstChild('Torso'))
-						aimPosition = torso and torso.Position or ent.RootPart.Position
-					elseif AimPart.Value == 'Closest' then
-						local closest = ent.Character and getClosestPartToCursor(ent.Character)
-						aimPosition = closest and closest.Position or ent.RootPart.Position
-					else
-						aimPosition = ent.RootPart.Position
-					end
-
-					if ShakeToggle and ShakeToggle.Enabled and ShakeAmount.Value > 0 then
-						shakeTime = shakeTime + dt
-						local camCF = gameCamera.CFrame
-						local dist = (aimPosition - camCF.Position).Magnitude
-						local intensity = ShakeAmount.Value * 0.0035 * math.max(dist, 1)
-						local driftX = math.noise(shakeTime * 0.8, 0, shakeSeed) * 2
-						local driftY = math.noise(0, shakeTime * 0.7, shakeSeed) * 2
-						local microX = math.noise(shakeTime * 9.5, shakeSeed, 0) * 2
-						local microY = math.noise(shakeSeed, shakeTime * 10.7, 0) * 2
-						local sx = (driftX * 0.7 + microX * 0.3) * intensity
-						local sy = (driftY * 0.55 + microY * 0.25) * intensity
-						aimPosition = aimPosition + camCF.RightVector * sx + camCF.UpVector * sy
-					end
-
-					local targetCFrame = CFrame.lookAt(gameCamera.CFrame.p, aimPosition)
-					local smoothVal = (SmoothnessToggle and SmoothnessToggle.Enabled and Smoothness) and Smoothness.Value or nil
-					local alpha = getAimAlpha(AimSpeed.Value, smoothVal, dt)
-					gameCamera.CFrame = gameCamera.CFrame:Lerp(targetCFrame, alpha)
 				end))
-			else
-				lockedTarget = nil
-				lastValidTarget = nil
-				shakeTime = 0
 			end
 		end,
-		Tooltip = 'aa with smooth tracking'
+		Tooltip = 'Smoothly aims to closest valid target with sword'
 	})
-	aimAssistModule = AimAssist
-
 	Targets = AimAssist:CreateTargets({
 		Players = true,
 		Walls = true
 	})
-
+	local methods = {'Damage', 'Distance'}
+	for i in sortmethods do
+		if not table.find(methods, i) then
+			table.insert(methods, i)
+		end
+	end
 	Sort = AimAssist:CreateDropdown({
 		Name = 'Target Mode',
-		List = getSortList({'Damage', 'Distance'}),
-		Tooltip = 'prioritize targets'
+		List = methods
 	})
-
-	AimPart = AimAssist:CreateDropdown({
-		Name = 'Aim Part',
-		List = {'Torso', 'Head', 'Closest'},
-		Default = 'Torso'
-	})
-
-	ViewMode = AimAssist:CreateDropdown({
-		Name = 'View Mode',
-		List = {'First Person', 'Third Person', 'Both'},
-		Default = 'Both',
-		Tooltip = 'either only aim in first person or third person, or both'
-	})
-	getgenv().ViewMode = ViewMode
-
 	AimSpeed = AimAssist:CreateSlider({
 		Name = 'Aim Speed',
 		Min = 1,
 		Max = 20,
-		Default = 6,
-		Tooltip = 'how fast aim assist moves toward the target'
+		Default = 6
 	})
-
 	Distance = AimAssist:CreateSlider({
 		Name = 'Distance',
 		Min = 1,
 		Max = 30,
-		Default = 25,
-		Suffix = function(val)
+		Default = 30,
+		Suffx = function(val)
 			return val == 1 and 'stud' or 'studs'
 		end
 	})
-
 	AngleSlider = AimAssist:CreateSlider({
-		Name = 'Max Angle',
+		Name = 'Max angle',
 		Min = 1,
 		Max = 360,
-		Default = 60,
+		Default = 70
 	})
-
-	SmoothnessToggle = AimAssist:CreateToggle({
-		Name = 'Smoothness',
-		Default = false,
-		Tooltip = 'makes aim assist feels more legit',
-		Function = function(callback)
-			if Smoothness then Smoothness.Object.Visible = callback end
-		end
-	})
-
-	Smoothness = AimAssist:CreateSlider({
-		Name = 'Smoothness Amount',
-		Min = 1,
-		Max = 10,
-		Default = 5,
-		Visible = false
-	})
-
-	PriorityMode = AimAssist:CreateToggle({
-		Name = 'Priority Mode',
-		Default = false,
-		Tooltip = 'stays on one target until target is lost'
-	})
-
 	ClickAim = AimAssist:CreateToggle({
 		Name = 'Click Aim',
-		Default = true,
-		Tooltip = 'only aims when clicking'
+		Default = true
 	})
-
 	KillauraTarget = AimAssist:CreateToggle({
-		Name = 'Use Killaura Target',
+		Name = 'Use killaura target'
 	})
-
-	ShakeToggle = AimAssist:CreateToggle({
-		Name = 'Shake',
-		Default = false,
-		Tooltip = 'shakes your screen for more legitness',
-		Function = function(callback)
-			if ShakeAmount then ShakeAmount.Object.Visible = callback end
-		end
-	})
-
-	ShakeAmount = AimAssist:CreateSlider({
-		Name = 'Shake Amount',
-		Min = 1,
-		Max = 10,
-		Default = 3,
-		Visible = false
-	})
-
-	ShopCheck = AimAssist:CreateToggle({
-		Name = 'Shop Check',
-		Default = false,
-	})
-
-	WorkWithProjectiles = AimAssist:CreateToggle({
-		Name = 'Work With Projectiles',
-		Default = false,
-	})
-
-	task.defer(function()
-		if Smoothness and Smoothness.Object then
-			Smoothness.Object.Visible = SmoothnessToggle and SmoothnessToggle.Enabled or false
-		end
-		if ShakeAmount and ShakeAmount.Object then
-			ShakeAmount.Object.Visible = false
-		end
-	end)
+	StrafeIncrease = AimAssist:CreateToggle({Name = 'Strafe increase'})
 end)
-
 run(function()
 	local KnockbackDisplace
 	local KBDirection
@@ -6151,685 +5831,104 @@ run(function()
 end)
 
 run(function()
-	local ProjectileAimbot
 	local TargetPart
 	local Targets
 	local FOV
-	local Range
 	local OtherProjectiles
-	local Blacklist
-	local SortMethod
-	local skidPAChargePercent
-	local RandomHeadPercent
-	local RandomTorsoPercent
-	local DesirePAWorkMode
-	local DesirePAHideCursor
-	local DesirePACursorViewMode
-	local DesirePACursorLimitBow
-	local DesirePACursorShowGUI
-	local cursorRenderConnection
-	local lastGUIState = false
 	local rayCheck = RaycastParams.new()
 	rayCheck.FilterType = Enum.RaycastFilterType.Include
-	local _rayMap = nil
-	local function refreshRayCheck()
-		local map = workspace:FindFirstChild('Map')
-		if map ~= _rayMap or not map or not map.Parent then
-			_rayMap = map
-			if map and map.Parent then
-				rayCheck.FilterDescendantsInstances = {map}
-			else
-				rayCheck.FilterType = Enum.RaycastFilterType.Exclude
-				rayCheck.FilterDescendantsInstances = {lplr.Character, gameCamera}
-				return
-			end
-			rayCheck.FilterType = Enum.RaycastFilterType.Include
-		end
-	end
-	refreshRayCheck()
+	rayCheck.FilterDescendantsInstances = {workspace:FindFirstChild('Map')}
 	local old
-	local math_sqrt = math.sqrt
-	local math_rad = math.rad
-	local math_cos = math.cos
-	local math_clamp = math.clamp
-	local math_min = math.min
-	local math_max = math.max
-	local lockedRandomPart = nil
-	local wasHovering = false
-	local _paVelHistory = {}
-	local CustomPredictions
-	local PredictHorizontal
-	local PredictVertical
-	local PAFOVCircle
-	local paFOVCircleDrawing = nil
-	local AutoCharge
-	local paFOVCircleConnection = nil
-
-	local paFOVCircleDrawing = nil 
-	local paFOVCircleConnection = nil
-
-	local function runPAFOVCircle(call)
-		if paFOVCircleConnection then
-			paFOVCircleConnection:Disconnect()
-			paFOVCircleConnection = nil
-		end
-		if paFOVCircleDrawing then
-			paFOVCircleDrawing:Destroy()
-			paFOVCircleDrawing = nil
-		end
-		if not call then return end
-
-		paFOVCircleDrawing = Instance.new('Frame')
-		paFOVCircleDrawing.Name = 'PAFOVCircle'
-		paFOVCircleDrawing.BackgroundTransparency = 1
-		paFOVCircleDrawing.AnchorPoint = Vector2.new(0.5, 0.5)
-		paFOVCircleDrawing.Visible = false
-		local stroke = Instance.new('UIStroke')
-		stroke.Thickness = 1
-		stroke.Color = Color3.fromRGB(255, 255, 255)
-		stroke.Parent = paFOVCircleDrawing
-		local corner = Instance.new('UICorner')
-		corner.CornerRadius = UDim.new(1, 0)
-		corner.Parent = paFOVCircleDrawing
-		paFOVCircleDrawing.Parent = vape.gui
-
-		paFOVCircleConnection = runService.RenderStepped:Connect(function()
-			if not paFOVCircleDrawing or not FOV or not FOV.Value then
-				paFOVCircleDrawing.Visible = false
-				return
-			end
-
-			local shouldShow = false
-			if PAFOVCircle and PAFOVCircle.Enabled and ProjectileAimbot and ProjectileAimbot.Enabled then
-				local tool = store.hand and store.hand.tool
-				local itemType = tool and tool.Name or ""
-				local itemMeta = bedwars.ItemMeta and bedwars.ItemMeta[itemType]
-				if itemMeta and itemMeta.projectileSource then
-					local src = itemMeta.projectileSource
-					local isArrow = src.ammoItemTypes and table.find(src.ammoItemTypes, 'arrow')
-					local isHeadhunter = itemType:find('headhunter')
-					if isArrow or isHeadhunter then
-						shouldShow = true
-					elseif OtherProjectiles and OtherProjectiles.Enabled then
-						local projectileType = src.projectileType and (type(src.projectileType) == 'function' and src.projectileType('arrow') or src.projectileType) or ""
-						local blacklisted = false
-						for _, black in ipairs(Blacklist and Blacklist.ListEnabled or {}) do
-							if tostring(projectileType):find(black) then
-								blacklisted = true
-								break
-							end
-						end
-						if not blacklisted then
-							shouldShow = true
-						end
-					end
-				end
-			end
-
-			paFOVCircleDrawing.Visible = shouldShow
-
-			if shouldShow then
-				local mousePos
-				if inputService.TouchEnabled then
-					mousePos = gameCamera.ViewportSize / 2
-				else
-					local mp = inputService:GetMouseLocation()
-					mousePos = Vector2.new(mp.X, mp.Y)
-				end
-				paFOVCircleDrawing.Position = UDim2.fromOffset(mousePos.X, mousePos.Y)
-				paFOVCircleDrawing.Size = UDim2.fromOffset(FOV.Value * 2, FOV.Value * 2)
-			end
-		end)
-	end
-
-	local function hasBowEquipped()
-		if not store.hand or not store.hand.toolType then return false end
-		return store.hand.toolType == 'bow' or store.hand.toolType == 'crossbow'
-	end
-
-	local function shouldHideCursor()
-		if not DesirePAHideCursor or not DesirePAHideCursor.Enabled then return false end
-		if DesirePACursorShowGUI and DesirePACursorShowGUI.Enabled and isGUIOpen() then return false end
-		if DesirePACursorLimitBow and DesirePACursorLimitBow.Enabled and not hasBowEquipped() then return false end
-		local inFirstPerson = isFirstPerson()
-		if DesirePACursorViewMode then
-			if DesirePACursorViewMode.Value == 'First Person' then return inFirstPerson
-			elseif DesirePACursorViewMode.Value == 'Third Person' then return not inFirstPerson
-			end
-		end
-		return true
-	end
-
-	local function updateCursor()
-		pcall(function() inputService.MouseIconEnabled = not shouldHideCursor() end)
-	end
-
-	local function checkGUIState()
-		local currentGUIState = isGUIOpen()
-		if lastGUIState ~= currentGUIState then
-			updateCursor()
-			lastGUIState = currentGUIState
-		end
-	end
-
-	local paLockedTarget = nil
-	local paLockTime = 0
-
-	local function paValidLock(originPos)
-		local t = paLockedTarget
-		if not t then return nil end
-		if tick() - paLockTime > 2 then return nil end
-		if not t.Character or not t.Character.Parent then return nil end
-		if not t.RootPart or not t.RootPart.Parent then return nil end
-		if t.Humanoid and t.Humanoid.Health <= 0 then return nil end
-		if (t.RootPart.Position - originPos).Magnitude > Range.Value then return nil end
-		return t
-	end
-
-	local function shouldPAWork()
-		if not DesirePAWorkMode then return true end
-		local inFirstPerson = isFirstPerson()
-		if DesirePAWorkMode.Value == 'First Person' then return inFirstPerson
-		elseif DesirePAWorkMode.Value == 'Third Person' then return not inFirstPerson
-		end
-		return true
-	end
-
-	local function isBlacklisted(projectileName)
-		if not OtherProjectiles or not OtherProjectiles.Enabled then
-			local isTurret = projectileName:find('turret') ~= nil or projectileName:find('vulcan') ~= nil
-			return not projectileName:find('arrow') and not isTurret
-		end
-		for _, black in ipairs(Blacklist and Blacklist.ListEnabled or {}) do
-			if projectileName:find(black) then
-				return true
-			end
-		end
-		return false
-	end
-
-	local function pickRandomPart(character)
-		local roll = math.random(1, 100)
-		local headChance = RandomHeadPercent.Value
-		local torsoChance = RandomTorsoPercent.Value
-		if roll <= headChance then
-			return character:FindFirstChild('Head') or character:FindFirstChild('HumanoidRootPart')
-		elseif roll <= headChance + torsoChance then
-			return character:FindFirstChild('UpperTorso') or character:FindFirstChild('HumanoidRootPart')
-		else
-			return character:FindFirstChild('HumanoidRootPart')
-		end
-	end
-
-	local function getClosestPart(character, mousePos)
-		local parts = {
-			'HumanoidRootPart', 'Head', 'LeftHand', 'RightHand',
-			'LeftLowerArm', 'RightLowerArm', 'LeftUpperArm', 'RightUpperArm',
-			'LeftFoot', 'RightFoot', 'LeftLowerLeg', 'RightLowerLeg',
-			'LeftUpperLeg', 'RightUpperLeg', 'LowerTorso', 'UpperTorso'
-		}
-		local camera = gameCamera
-		local rayOrigin = camera.CFrame.Position
-		local rayDir = camera:ScreenPointToRay(mousePos.X, mousePos.Y, 0).Direction
-		local bestAngle = math.huge
-		local bestPart = nil
-
-		for _, partName in ipairs(parts) do
-			local part = character:FindFirstChild(partName)
-			if part then
-				local dirToPart = (part.Position - rayOrigin).Unit
-				local angle = math.acos(math_clamp(rayDir:Dot(dirToPart), -1, 1))
-				if angle < bestAngle then
-					bestAngle = angle
-					bestPart = part
-				end
-			end
-		end
-		return bestPart or character:FindFirstChild('HumanoidRootPart')
-	end
-
-	ProjectileAimbot = vape.Categories.Blatant:CreateModule({
+	
+	local ProjectileAimbot = vape.Categories.Blatant:CreateModule({
 		Name = 'ProjectileAimbot',
 		Function = function(callback)
 			if callback then
-				if SilentAim and SilentAim.Enabled then
-					SilentAim:Toggle(false)
-					notif('ProjectileAimbot', 'turned off SilentAim, they cant both run at once gng', 4)
-				end
-				if PAFOVCircle then
-					runPAFOVCircle(PAFOVCircle.Enabled)
-				end
-				if DesirePAHideCursor and DesirePAHideCursor.Enabled and not cursorRenderConnection then
-					cursorRenderConnection = runService.RenderStepped:Connect(function()
-						checkGUIState()
-						updateCursor()
-					end)
-					ProjectileAimbot:Clean(cursorRenderConnection)
-				end
-
 				old = bedwars.ProjectileController.calculateImportantLaunchValues
 				bedwars.ProjectileController.calculateImportantLaunchValues = function(...)
 					local self, projmeta, worldmeta, origin, shootpos = ...
-					local originPos = entitylib.isAlive and (shootpos or (entitylib.character and entitylib.character.RootPart and entitylib.character.RootPart.Position)) or Vector3.zero
-					if not originPos then return old(...) end
-
 					local plr = entitylib.EntityMouse({
 						Part = 'RootPart',
 						Range = FOV.Value,
 						Players = Targets.Players.Enabled,
-						NPCs = (Targets.NPCs and Targets.NPCs.Enabled) or false,
+						NPCs = Targets.NPCs.Enabled,
 						Wallcheck = Targets.Walls.Enabled,
-						Origin = originPos
+						Origin = entitylib.isAlive and (shootpos or entitylib.character.RootPart.Position) or Vector3.zero
 					})
-
+	
 					if plr then
-						paLockedTarget = plr
-						paLockTime = tick()
-					else
-						plr = paValidLock(originPos)
-					end
-
-					if not plr then
-						paLockedTarget = nil
-						wasHovering = false
-						return old(...)
-					end
-					
-					if not shouldPAWork() then
-						wasHovering = false
-						return old(...)
-					end
-
-					local targetBodyPart = nil
-					if TargetPart.Value == 'Dynamic' then
-						local tool = store.hand and store.hand.tool
-						local itemType = tostring(tool and tool.Name or ""):lower()
-						local isHH = itemType:find("headhunter")
-						targetBodyPart = (isHH and plr.Character and plr.Character:FindFirstChild("Head")) or plr.RootPart
-					elseif TargetPart.Value == 'RootPart' then
-						targetBodyPart = plr.RootPart
-					elseif TargetPart.Value == 'Head' then
-						targetBodyPart = (plr.Character and plr.Character:FindFirstChild('Head')) or plr.RootPart
-					elseif TargetPart.Value == 'Closest' then
-						local mousePos = inputService.TouchEnabled and (gameCamera.ViewportSize / 2) or inputService:GetMouseLocation()
-						targetBodyPart = plr.Character and getClosestPart(plr.Character, mousePos) or plr.RootPart
-					elseif TargetPart.Value == 'Randomize' then
-						if lockedRandomPart and lockedRandomPart.Parent ~= plr.Character then
-							lockedRandomPart = nil
+						local pos = shootpos or self:getLaunchPosition(origin)
+						if not pos then
+							return old(...)
 						end
-						if plr.Character and (not lockedRandomPart or not lockedRandomPart.Parent) then
-							lockedRandomPart = pickRandomPart(plr.Character)
+	
+						if (not OtherProjectiles.Enabled) and not projmeta.projectile:find('arrow') then
+							return old(...)
 						end
-						targetBodyPart = lockedRandomPart or plr.RootPart
-					else
-						targetBodyPart = plr.RootPart
-					end
-					if not targetBodyPart then
-						wasHovering = false
-						return old(...)
-					end
-					local dist = (targetBodyPart.Position - originPos).Magnitude
-					if dist > Range.Value then
-						wasHovering = false
-						return old(...)
-					end
-					local pos = shootpos or self:getLaunchPosition(origin)
-					if not pos then
-						wasHovering = false
-						return old(...)
-					end
-					local projectileName = projmeta.projectile or ""
-					if isBlacklisted(projectileName) then
-						wasHovering = false
-						return old(...)
-					end
-					refreshRayCheck()
-					local meta = projmeta:getProjectileMeta()
-					local lifetime = (worldmeta and meta.predictionLifetimeSec or meta.lifetimeSec or 3)
-					local gravityMultiplier = projmeta.gravityMultiplier or 1
-					local gravity = (meta.gravitationalAcceleration or 196.2) * gravityMultiplier
-					local maxDraw = tonumber(projmeta.maxStrengthChargeSec) or tonumber(projmeta.maxDrawDurationSeconds) or tonumber(meta.maxDrawDurationSeconds) or (projmeta.projectile:find('arrow') and 0.65 or 0.8)
-					local drawPct = AutoCharge.Enabled and (skidPAChargePercent.Value / 100) or 1
-					local customDrawDuration = maxDraw * drawPct
-					local paMinScalar = tonumber(projmeta.minStrengthScalar) or 1
-					local projSpeed = (meta.launchVelocity or 100) * (paMinScalar + (1 - paMinScalar) * math.clamp(drawPct, 0, 1))
-					local safeOffset = (projmeta.projectile == 'owl_projectile') and Vector3.zero or (projmeta.fromPositionOffset or Vector3.zero)
-					local offsetpos = pos + safeOffset
-					local balloons = plr.Character and plr.Character:GetAttribute('InflatedBalloons')
-					local playerGravity = workspace.Gravity
-					if balloons and balloons > 0 then
-						playerGravity = workspace.Gravity * (1 - (balloons >= 4 and 1.2 or balloons >= 3 and 1 or 0.975))
-					end
-					if plr.Character and plr.Character.PrimaryPart and plr.Character.PrimaryPart:FindFirstChild('rbxassetid://8200754399') then
-						playerGravity = 6
-					end
-					if plr.Player and plr.Player:GetAttribute('IsOwlTarget') then
-						for _, owl in ipairs(collectionService:GetTagged('Owl')) do
-							if owl:GetAttribute('Target') == plr.Player.UserId and owl:GetAttribute('Status') == 2 then
-								playerGravity = 0
-								break
+	
+						local meta = projmeta:getProjectileMeta()
+						local lifetime = (worldmeta and meta.predictionLifetimeSec or meta.lifetimeSec or 3)
+						local gravity = (meta.gravitationalAcceleration or 196.2) * projmeta.gravityMultiplier
+						local projSpeed = (meta.launchVelocity or 100)
+						local offsetpos = pos + (projmeta.projectile == 'owl_projectile' and Vector3.zero or projmeta.fromPositionOffset)
+						local balloons = plr.Character:GetAttribute('InflatedBalloons')
+						local playerGravity = workspace.Gravity
+	
+						if balloons and balloons > 0 then
+							playerGravity = (workspace.Gravity * (1 - ((balloons >= 4 and 1.2 or balloons >= 3 and 1 or 0.975))))
+						end
+	
+						if plr.Character.PrimaryPart:FindFirstChild('rbxassetid://8200754399') then
+							playerGravity = 6
+						end
+	
+						if plr.Player:GetAttribute('IsOwlTarget') then
+							for _, owl in collectionService:GetTagged('Owl') do
+								if owl:GetAttribute('Target') == plr.Player.UserId and owl:GetAttribute('Status') == 2 then
+									playerGravity = 0
+								end
 							end
 						end
-					end
-					local bowRelX = bedwars.BowConstantsTable.RelX or 0
-					local bowRelY = bedwars.BowConstantsTable.RelY or 0
-					local bowRelZ = bedwars.BowConstantsTable.RelZ or 0
-					local rawVel = plr.RootPart.AssemblyLinearVelocity or plr.RootPart.Velocity or Vector3.zero
-					local _velKey = tostring(plr)
-					local previousVel = _paVelHistory[_velKey]
-					local smoothVel = rawVel
-					if previousVel then
-						local velocityChange = (rawVel - previousVel).Magnitude
-						local smoothing = math_clamp(0.35 + velocityChange / 50, 0.35, 0.8)
-						smoothVel = previousVel:Lerp(rawVel, smoothing)
-					end
-					_paVelHistory[_velKey] = smoothVel
-					smoothVel = Vector3.new(smoothVel.X, rawVel.Y, smoothVel.Z)
-
-					local aimTarget = targetBodyPart.Position
-					local solverVelocity = projmeta.projectile == 'telepearl' and Vector3.zero or smoothVel
-					local tHum = plr.Character and plr.Character:FindFirstChildOfClass('Humanoid')
-					local tAirborne = false
-					if tHum then
-						tAirborne = tHum.FloorMaterial == Enum.Material.Air
-						if not tAirborne then
-							local st = tHum:GetState()
-							tAirborne = st == Enum.HumanoidStateType.Jumping or st == Enum.HumanoidStateType.Freefall
-						end
-					end
-					if not tAirborne and math.abs(rawVel.Y) > 3 then
-						tAirborne = true
-					end
-					local tJumpPower = 42.6
-					if tHum and tHum.UseJumpPower and tHum.JumpPower and tHum.JumpPower > 0 then
-						tJumpPower = tHum.JumpPower
-					end
-					local tJump = (tAirborne or plr.Jumping) and tJumpPower or nil
-					local horizLead = 1
-					local vertLead = 1
-					if CustomPredictions and CustomPredictions.Enabled and projmeta.projectile ~= 'telepearl' then
-						horizLead = PredictHorizontal.Value / 100
-						vertLead = PredictVertical.Value / 100
-					end
-					if horizLead ~= 1 or vertLead ~= 1 then
-						solverVelocity = Vector3.new(
-							solverVelocity.X * horizLead,
-							solverVelocity.Y * vertLead,
-							solverVelocity.Z * horizLead
-						)
-					end
-
-					local newlook = CFrame.new(offsetpos, aimTarget) *
-						CFrame.new(projmeta.projectile == 'owl_projectile' and Vector3.zero or
-							Vector3.new(bowRelX, bowRelY, bowRelZ))
-					local calc = prediction.SolveTrajectory(
-						newlook.p, projSpeed, gravity,
-						aimTarget,
-						solverVelocity,
-						playerGravity, plr.HipHeight,
-						tJump,
-						rayCheck,
-						tAirborne,
-						plr.RootPart.Position,
-						plr.RootPart,
-						nil,
-						true
-					)
-					if not calc then
-						calc = prediction.SolveTrajectory(
-							newlook.p, projSpeed, gravity,
-							aimTarget,
-							solverVelocity,
-							playerGravity, plr.HipHeight,
-							tJump,
-							nil,
-							tAirborne,
-							plr.RootPart.Position,
-							plr.RootPart,
-							nil,
-							false
-						)
-					end
-
-					if calc then
-						paLockedTarget = plr
-						paLockTime = tick()
-						if targetinfo and targetinfo.Targets then
+	
+						local newlook = CFrame.new(offsetpos, plr[TargetPart.Value].Position) * CFrame.new(projmeta.projectile == 'owl_projectile' and Vector3.zero or Vector3.new(bedwars.BowConstantsTable.RelX, bedwars.BowConstantsTable.RelY, bedwars.BowConstantsTable.RelZ))
+						local calc = prediction.SolveTrajectory(newlook.p, projSpeed, gravity, plr[TargetPart.Value].Position, projmeta.projectile == 'telepearl' and Vector3.zero or plr[TargetPart.Value].Velocity, playerGravity, plr.HipHeight, plr.Jumping and 42.6 or nil, rayCheck)
+						if calc then
 							targetinfo.Targets[plr] = tick() + 1
+							return {
+								initialVelocity = CFrame.new(newlook.Position, calc).LookVector * projSpeed,
+								positionFrom = offsetpos,
+								deltaT = lifetime,
+								gravitationalAcceleration = gravity,
+								drawDurationSeconds = 5
+							}
 						end
-						wasHovering = false
-						return {
-							initialVelocity = CFrame.new(newlook.Position, calc).LookVector * projSpeed,
-							positionFrom = offsetpos,
-							deltaT = lifetime,
-							gravitationalAcceleration = gravity,
-							drawDurationSeconds = customDrawDuration
-						}
 					end
-					wasHovering = false
+	
 					return old(...)
 				end
 			else
 				bedwars.ProjectileController.calculateImportantLaunchValues = old
-				wasHovering = false
-				lockedRandomPart = nil
-				table.clear(_paVelHistory)
-				if cursorRenderConnection then
-					cursorRenderConnection:Disconnect()
-					cursorRenderConnection = nil
-				end
-				runPAFOVCircle(false)
-				pcall(function() inputService.MouseIconEnabled = true end)
-				task.defer(function()
-					pcall(function() inputService.MouseIconEnabled = true end)
-					pcall(function() game:GetService('UserInputService').MouseIconEnabled = true end)
-				end)
 			end
 		end,
-		Tooltip = 'helps your shitty ass aim'
+		Tooltip = 'Silently adjusts your aim towards the enemy'
 	})
-
 	Targets = ProjectileAimbot:CreateTargets({
 		Players = true,
-		NPCs = true,
 		Walls = true
 	})
-
 	TargetPart = ProjectileAimbot:CreateDropdown({
 		Name = 'Part',
-		List = {'Dynamic', 'RootPart', 'Head', 'Closest', 'Randomize'},
-		Default = 'RootPart',
-		Function = function()
-			lockedRandomPart = nil
-			wasHovering = false
-		end
+		List = {'RootPart', 'Head'}
 	})
-
-	SortMethod = ProjectileAimbot:CreateDropdown({
-		Name = 'Sort Method',
-		List = getSortList({'Distance', 'Damage', 'Cursor'}),
-		Default = 'Cursor',
-	})
-
-	DesirePAWorkMode = ProjectileAimbot:CreateDropdown({
-		Name = 'PA Work Mode',
-		List = {'First Person', 'Third Person', 'Both'},
-		Default = 'Both',
-	})
-
-	Range = ProjectileAimbot:CreateSlider({
-		Name = 'Range',
-		Min = 10,
-		Max = 500,
-		Default = 100,
-	})
-
 	FOV = ProjectileAimbot:CreateSlider({
 		Name = 'FOV',
 		Min = 1,
 		Max = 1000,
-		Default = 300,
+		Default = 1000
 	})
-
-	PAFOVCircle = ProjectileAimbot:CreateToggle({
-		Name = 'FOV Circle',
-		Function = function(call)
-			runPAFOVCircle(call)
-		end
-	})
-
-	RandomHeadPercent = ProjectileAimbot:CreateSlider({
-		Name = 'Head Chance',
-		Min = 0,
-		Max = 100,
-		Default = 50,
-		Darker = true,
-		Visible = false
-	})
-
-	RandomTorsoPercent = ProjectileAimbot:CreateSlider({
-		Name = 'Torso Chance',
-		Min = 0,
-		Max = 100,
-		Default = 50,
-		Darker = true,
-		Visible = false,
-		Function = function(val)
-			if RandomHeadPercent and (RandomHeadPercent.Value + val) > 100 then
-				notif('ProjectileAimbot', 'head or torso chance is more than 100% so root part will never be picked..', 3)
-			end
-		end
-	})
-
-	local function updateRandomizeVisibility()
-		local vis = (TargetPart.Value == 'Randomize')
-		RandomHeadPercent.Object.Visible = vis
-		RandomTorsoPercent.Object.Visible = vis
-	end
-	if TargetPart.AddHook then
-		TargetPart:AddHook(updateRandomizeVisibility)
-	end
-	updateRandomizeVisibility()
-
-	DesirePAHideCursor = ProjectileAimbot:CreateToggle({
-		Name = 'Hide Cursor',
-		Default = false,
-		Tooltip = 'Hides the cursor while aiming',
-		Function = function(callback)
-			if DesirePACursorViewMode then DesirePACursorViewMode.Object.Visible = callback end
-			if DesirePACursorLimitBow then DesirePACursorLimitBow.Object.Visible = callback end
-			if DesirePACursorShowGUI then DesirePACursorShowGUI.Object.Visible = callback end
-			if callback and ProjectileAimbot.Enabled then
-				if not cursorRenderConnection then
-					cursorRenderConnection = runService.RenderStepped:Connect(function()
-						checkGUIState()
-						updateCursor()
-					end)
-				end
-				updateCursor()
-			else
-				if cursorRenderConnection then
-					cursorRenderConnection:Disconnect()
-					cursorRenderConnection = nil
-				end
-				pcall(function() inputService.MouseIconEnabled = true end)
-				task.defer(function()
-					pcall(function() inputService.MouseIconEnabled = true end)
-					pcall(function() game:GetService('UserInputService').MouseIconEnabled = true end)
-				end)
-			end
-		end
-	})
-
-	DesirePACursorViewMode = ProjectileAimbot:CreateDropdown({
-		Name = 'Cursor View Mode',
-		List = {'First Person', 'Third Person', 'Both'},
-		Default = 'First Person',
-		Darker = true,
-		Visible = false,
-		Function = function()
-			if ProjectileAimbot.Enabled and DesirePAHideCursor.Enabled then
-				updateCursor()
-			end
-		end
-	})
-
-	DesirePACursorLimitBow = ProjectileAimbot:CreateToggle({
-		Name = 'Limit to Bow',
-		Darker = true,
-		Visible = false,
-		Function = function()
-			if ProjectileAimbot.Enabled and DesirePAHideCursor.Enabled then
-				updateCursor()
-			end
-		end
-	})
-
-	DesirePACursorShowGUI = ProjectileAimbot:CreateToggle({
-		Name = 'Show on GUI',
-		Darker = true,
-		Visible = false,
-		Function = function()
-			if ProjectileAimbot.Enabled and DesirePAHideCursor.Enabled then
-				updateCursor()
-			end
-		end
-	})
-
 	OtherProjectiles = ProjectileAimbot:CreateToggle({
 		Name = 'Other Projectiles',
-		Default = true,
-		Function = function(call)
-			if Blacklist then Blacklist.Object.Visible = call end
-		end
-	})
-
-	Blacklist = ProjectileAimbot:CreateTextList({
-		Name = 'Blacklist',
-		Darker = true,
-		Default = {'telepearl'},
-		Visible = OtherProjectiles.Enabled
-	})
-
-	CustomPredictions = ProjectileAimbot:CreateToggle({
-		Name = 'Custom Predictions',
-		Default = false,
-		Tooltip = 'lets u control how much it leads the target urself',
-		Function = function(callback)
-			if PredictHorizontal then PredictHorizontal.Object.Visible = callback end
-			if PredictVertical then PredictVertical.Object.Visible = callback end
-		end
-	})
-	PredictHorizontal = ProjectileAimbot:CreateSlider({
-		Name = 'Horizontal',
-		Min = 0,
-		Max = 300,
-		Default = 100,
-		Suffix = '%',
-		Darker = true,
-		Visible = false
-	})
-	PredictVertical = ProjectileAimbot:CreateSlider({
-		Name = 'Vertical',
-		Min = 0,
-		Max = 300,
-		Default = 100,
-		Suffix = '%',
-		Darker = true,
-		Visible = false
-	})
-	AutoCharge = ProjectileAimbot:CreateToggle({
-		Name = "AutoCharge",
-		Default = true,
-		Function = function(v)
-			if skidPAChargePercent and skidPAChargePercent.Object then skidPAChargePercent.Object.Visible = v end
-		end
-	})
-	skidPAChargePercent = ProjectileAimbot:CreateSlider({
-		Name = 'Charge Percent',
-		Min = 1,
-		Max = 100,
-		Default = 100,
+		Default = true
 	})
 end)
 
