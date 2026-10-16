@@ -2979,36 +2979,85 @@ run(function()
 	local StrafeIncrease
 	local KillauraTarget
 	local ClickAim
+	local clickTarget
+	local clickHeld = false
 	
 	AimAssist = vape.Categories.Combat:CreateModule({
 		Name = 'AimAssist',
 		Function = function(callback)
 			if callback then
+				AimAssist:Clean(inputService.InputBegan:Connect(function(input)
+					if input.UserInputType == Enum.UserInputType.MouseButton1 then
+						clickHeld = true
+					end
+				end))
+				AimAssist:Clean(inputService.InputEnded:Connect(function(input)
+					if input.UserInputType == Enum.UserInputType.MouseButton1 then
+						clickHeld = false
+					end
+				end))
+				if inputService.TouchEnabled then
+					for _, buttonName in {'2', '5'} do
+						pcall(function()
+							local button = lplr.PlayerGui.MobileUI[buttonName]
+							AimAssist:Clean(button.MouseButton1Down:Connect(function()
+								clickHeld = true
+							end))
+							AimAssist:Clean(button.MouseButton1Up:Connect(function()
+								clickHeld = false
+							end))
+						end)
+					end
+				end
 				AimAssist:Clean(runService.Heartbeat:Connect(function(dt)
-					local swordController = bedwars.SwordController
-					local lastAttack = swordController and swordController.lastAttack
-					local sinceAttack = type(lastAttack) == 'number' and (workspace:GetServerTimeNow() - lastAttack)
-					local clickedRecently = sinceAttack and sinceAttack >= 0 and sinceAttack < 0.4
-					if entitylib.isAlive and store.hand and store.hand.toolType == 'sword' and ((not ClickAim.Enabled) or clickedRecently) then
-						local ent = not KillauraTarget.Enabled and entitylib.EntityPosition({
-							Range = Distance.Value,
-							Part = 'RootPart',
-							Wallcheck = Targets.Walls.Enabled,
-							Players = Targets.Players.Enabled,
-							NPCs = Targets.NPCs.Enabled,
-							Sort = sortmethods[Sort.Value]
-						}) or store.KillauraTarget
+					local clickActive = ClickAim.Enabled and (clickHeld or inputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1))
+					if not clickActive then
+						clickTarget = nil
+					end
+					if entitylib.isAlive and store.hand and store.hand.toolType == 'sword' and ((not ClickAim.Enabled) or clickActive) then
+						local ent
+						if clickActive then
+							local targetValid = clickTarget and clickTarget.Targetable and clickTarget.RootPart and clickTarget.RootPart.Parent
+								and (clickTarget.RootPart.Position - entitylib.character.RootPart.Position).Magnitude <= Distance.Value
+							if targetValid then
+								ent = clickTarget
+							else
+								clickTarget = not KillauraTarget.Enabled and entitylib.EntityPosition({
+									Range = Distance.Value,
+									Part = 'RootPart',
+									Wallcheck = Targets.Walls.Enabled,
+									Players = Targets.Players.Enabled,
+									NPCs = Targets.NPCs.Enabled,
+									Sort = sortmethods[Sort.Value]
+								}) or store.KillauraTarget
+								ent = clickTarget
+							end
+						else
+							ent = not KillauraTarget.Enabled and entitylib.EntityPosition({
+								Range = Distance.Value,
+								Part = 'RootPart',
+								Wallcheck = Targets.Walls.Enabled,
+								Players = Targets.Players.Enabled,
+								NPCs = Targets.NPCs.Enabled,
+								Sort = sortmethods[Sort.Value]
+							}) or store.KillauraTarget
+						end
 	
 						if ent then
-							local delta = (ent.RootPart.Position - entitylib.character.RootPart.Position)
-							local localfacing = entitylib.character.RootPart.CFrame.LookVector * Vector3.new(1, 0, 1)
-							local angle = math.acos(localfacing:Dot((delta * Vector3.new(1, 0, 1)).Unit))
-							if not (ClickAim.Enabled and clickedRecently) and angle >= (math.rad(AngleSlider.Value) / 2) then return end
+							if not clickActive then
+								local delta = (ent.RootPart.Position - entitylib.character.RootPart.Position)
+								local localfacing = entitylib.character.RootPart.CFrame.LookVector * Vector3.new(1, 0, 1)
+								local angle = math.acos(localfacing:Dot((delta * Vector3.new(1, 0, 1)).Unit))
+								if angle >= (math.rad(AngleSlider.Value) / 2) then return end
+							end
 							targetinfo.Targets[ent] = tick() + 1
 							gameCamera.CFrame = gameCamera.CFrame:Lerp(CFrame.lookAt(gameCamera.CFrame.p, ent.RootPart.Position), (AimSpeed.Value + (StrafeIncrease.Enabled and (inputService:IsKeyDown(Enum.KeyCode.A) or inputService:IsKeyDown(Enum.KeyCode.D)) and 10 or 0)) * dt)
 						end
 					end
 				end))
+			else
+				clickHeld = false
+				clickTarget = nil
 			end
 		end,
 		Tooltip = 'Smoothly aims to closest valid target with sword'
