@@ -163,6 +163,7 @@ local store = {
 	terraKickTime = 0,
 }
 getgenv().store = store
+local bedProtectorAutoSwitchSlot = nil
 local Reach = {}
 local HitBoxes = {}
 local TrapDisabler
@@ -3093,12 +3094,12 @@ run(function()
 						return
 					end
 
-					local validWeapon = store.hand.toolType == 'sword'
+					local autoSwitchedBlock = bedProtectorAutoSwitchSlot == store.inventory.hotbarSlot and store.hand.toolType == 'block'
+					local validWeapon = store.hand.toolType == 'sword' or autoSwitchedBlock
 					if WorkWithProjectiles and WorkWithProjectiles.Enabled then
 						validWeapon = validWeapon or isHoldingBowCrossbow()
 					end
 					if not validWeapon then
-						lockedTarget = nil
 						return
 					end
 
@@ -20023,8 +20024,8 @@ run(function()
 	end
 
 	local function getSlotFor(itemType)
-		for i, v in store.inventory.hotbar do
-			if v.item and v.item.itemType == itemType then
+		for i, v in (store.inventory.hotbar or {}) do
+			if v and v.item and v.item.itemType == itemType then
 				return i - 1
 			end
 		end
@@ -20033,22 +20034,40 @@ run(function()
 
 	local function restorePreviousSlot()
 		if heldBlockType then
-			if previousSlot then hotbarSwitch(previousSlot) end
+			if previousSlot and store.inventory.hotbarSlot == bedProtectorAutoSwitchSlot then
+				hotbarSwitch(previousSlot)
+			end
 			heldBlockType = nil
 			previousSlot = nil
+			bedProtectorAutoSwitchSlot = nil
 		end
 	end
 
 	local function switchToBlock(itemType)
-		if LimitItem.Enabled then return end
-		if not AutoSwitch.Enabled then return end
-		if heldBlockType == itemType then return end
-		local slot = getSlotFor(itemType)
-		if slot then
-			previousSlot = previousSlot or store.inventory.hotbarSlot
-			hotbarSwitch(slot)
-			heldBlockType = itemType
+		if LimitItem.Enabled or not AutoSwitch.Enabled then
+			return store.hand.toolType == 'block' and store.hand.tool and store.hand.tool.Name == itemType
 		end
+		if heldBlockType and store.inventory.hotbarSlot ~= bedProtectorAutoSwitchSlot then
+			heldBlockType = nil
+			previousSlot = nil
+			bedProtectorAutoSwitchSlot = nil
+		end
+		local slot = getSlotFor(itemType)
+		if not slot then
+			restorePreviousSlot()
+			return false
+		end
+		if heldBlockType == itemType and bedProtectorAutoSwitchSlot == slot and store.inventory.hotbarSlot == slot then
+			return true
+		end
+		local originalSlot = previousSlot or store.inventory.hotbarSlot
+		local switched = store.inventory.hotbarSlot == slot or hotbarSwitch(slot)
+		if switched then
+			previousSlot = originalSlot
+			heldBlockType = itemType
+			bedProtectorAutoSwitchSlot = slot
+		end
+		return switched
 	end
 
 	local function isPositionInRange(worldPos)
@@ -20076,10 +20095,11 @@ run(function()
 				local worldPos = (bedCFrame * CFrame.new(pos)).Position
 				if isPositionInRange(worldPos) and not getPlacedBlock(worldPos) then
 					if not switched then
-						switchToBlock(block.itemType)
-						switched = true
+						switched = switchToBlock(block.itemType)
 					end
-					task.spawn(bedwars.placeBlock, worldPos, block.itemType, false)
+					if switched then
+						task.spawn(bedwars.placeBlock, worldPos, block.itemType, false)
+					end
 				end
 			end
 		end
@@ -20128,10 +20148,11 @@ run(function()
 			local worldPos = (bedCFrame * CFrame.new(pos)).Position
 			if isPositionInRange(worldPos) and not getPlacedBlock(worldPos) then
 				if tick() - lastPlaceTime >= 0.05 then
-					switchToBlock(block.itemType)
-					task.spawn(bedwars.placeBlock, worldPos, block.itemType, false)
-					lastPlaceTime = tick()
-					task.wait(0.05)
+					if switchToBlock(block.itemType) then
+						task.spawn(bedwars.placeBlock, worldPos, block.itemType, false)
+						lastPlaceTime = tick()
+						task.wait(0.05)
+					end
 				end
 			end
 		end
@@ -20144,11 +20165,15 @@ run(function()
 			if callback then
 				currentLayer = 0
 				buildingComplete = false
+				restorePreviousSlot()
 				heldBlockType = nil
 				previousSlot = nil
 				repeat
 					pcall(function()
-						if not entitylib.isAlive then return end
+						if not entitylib.isAlive then
+							restorePreviousSlot()
+							return
+						end
 						local bed = getMyBed()
 						if not bed then
 							restorePreviousSlot()
@@ -20156,7 +20181,10 @@ run(function()
 						end
 						local bedCFrame = bed:IsA('BasePart') and bed.CFrame or (bed.PrimaryPart and bed.PrimaryPart.CFrame or bed:GetPivot())
 						local blocks = getBlocks()
-						if #blocks == 0 and not LimitItem.Enabled then return end
+						if #blocks == 0 and not LimitItem.Enabled then
+							restorePreviousSlot()
+							return
+						end
 						repairAll(bedCFrame, blocks, currentLayer)
 						if not buildingComplete then
 							buildLayer(bedCFrame, blocks)
@@ -20172,11 +20200,17 @@ run(function()
 
 	LimitItem = BedProtector:CreateToggle({
 		Name = 'Limit to items',
+		Function = function(callback)
+			if callback then restorePreviousSlot() end
+		end,
 		Tooltip = 'only builds while ur already holdin a block'
 	})
 	AutoSwitch = BedProtector:CreateToggle({
 		Name = 'Auto Switch',
 		Default = true,
+		Function = function(callback)
+			if not callback then restorePreviousSlot() end
+		end,
 		Tooltip = 'swaps ur hotbar to the block by itself then swaps back after. ignored if limit to items is on'
 	})
 	RangeSlider = BedProtector:CreateSlider({
