@@ -164,6 +164,8 @@ local store = {
 }
 getgenv().store = store
 local bedProtectorAutoSwitchSlot = nil
+local autoShootTarget = nil
+local aimAssistModule = nil
 local Reach = {}
 local HitBoxes = {}
 local TrapDisabler
@@ -3094,8 +3096,8 @@ run(function()
 						return
 					end
 
-					local autoSwitchedBlock = bedProtectorAutoSwitchSlot == store.inventory.hotbarSlot and store.hand.toolType == 'block'
-					local validWeapon = store.hand.toolType == 'sword' or autoSwitchedBlock
+					local autoShootingProjectile = store.autoShooting and isHoldingBowCrossbow()
+					local validWeapon = store.hand.toolType == 'sword' or autoShootingProjectile
 					if WorkWithProjectiles and WorkWithProjectiles.Enabled then
 						validWeapon = validWeapon or isHoldingBowCrossbow()
 					end
@@ -3124,7 +3126,14 @@ run(function()
 
 					local ent = nil
 
-					if KillauraTarget and KillauraTarget.Enabled then
+					if store.autoShooting and autoShootTarget and isEntValid(autoShootTarget) then
+						ent = autoShootTarget
+						lastValidTarget = ent
+						lastValidTime = tick()
+						if PriorityMode and PriorityMode.Enabled then
+							lockedTarget = ent
+						end
+					elseif KillauraTarget and KillauraTarget.Enabled then
 						local ka = store.KillauraTarget
 						if ka and ka.RootPart and ka.Character and ka.Character.Parent then
 							local hum = ka.Character:FindFirstChildOfClass('Humanoid')
@@ -3179,7 +3188,7 @@ run(function()
 							lastValidTarget = nil
 							return
 						end
-						if not isInAngle(ent) then
+						if not (store.autoShooting and autoShootTarget == ent) and not isInAngle(ent) then
 							if PriorityMode and PriorityMode.Enabled then lockedTarget = nil end
 							return
 						end
@@ -3228,6 +3237,7 @@ run(function()
 		end,
 		Tooltip = 'aa with smooth tracking'
 	})
+	aimAssistModule = AimAssist
 
 	Targets = AimAssist:CreateTargets({
 		Players = true,
@@ -34847,9 +34857,10 @@ run(function()
 		end
 		busy = true
 		store.autoShooting = true
+		autoShootTarget = target
 		local previous = store.inventory.hotbarSlot
 		local aimBound = false
-		local ok = pcall(function()
+		local ok, err = pcall(function()
 			if not selectSlot(slot) then return end
 			local start = tick()
 			local hand
@@ -34860,7 +34871,7 @@ run(function()
 			local ctrl = findSourceController(item)
 			if not ctrl then return end
 			runService:BindToRenderStep(aimBindName, Enum.RenderPriority.Camera.Value + 2, function()
-				if ClickAim.Enabled then
+				if ClickAim.Enabled and not (aimAssistModule and aimAssistModule.Enabled) then
 					local root = target and target.RootPart
 					local camera = workspace.CurrentCamera
 					if root and root.Parent and camera then
@@ -34880,13 +34891,22 @@ run(function()
 			task.wait(SwitchDelay.Value)
 		end)
 		if aimBound then
-			runService:UnbindFromRenderStep(aimBindName)
+			pcall(function()
+				runService:UnbindFromRenderStep(aimBindName)
+			end)
 		end
-		if previous and store.inventory.hotbarSlot ~= previous then
-			pcall(selectSlot, previous)
+		if previous and previous ~= slot and store.inventory.hotbarSlot == slot then
+			local restored, result = pcall(selectSlot, previous)
+			if not restored or not result then
+				warn('[aerov4] AutoShoot could not restore the previous hotbar slot')
+			end
 		end
+		autoShootTarget = nil
 		store.autoShooting = false
 		busy = false
+		if not ok then
+			warn('[aerov4] AutoShoot failed: ' .. tostring(err))
+		end
 		return ok
 	end
 
@@ -34922,6 +34942,7 @@ run(function()
 				until not AutoShoot.Enabled
 			else
 				store.autoShooting = false
+				autoShootTarget = nil
 			end
 		end,
 		Tooltip = 'switches to your bow and shoots at a nearby target when you swing your sword; enable Click Aim to aim while charging and firing'
