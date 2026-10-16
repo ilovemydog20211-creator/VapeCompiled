@@ -3003,7 +3003,7 @@ run(function()
 							local delta = (ent.RootPart.Position - entitylib.character.RootPart.Position)
 							local localfacing = entitylib.character.RootPart.CFrame.LookVector * Vector3.new(1, 0, 1)
 							local angle = math.acos(localfacing:Dot((delta * Vector3.new(1, 0, 1)).Unit))
-							if angle >= (math.rad(AngleSlider.Value) / 2) then return end
+							if not (ClickAim.Enabled and clickedRecently) and angle >= (math.rad(AngleSlider.Value) / 2) then return end
 							targetinfo.Targets[ent] = tick() + 1
 							gameCamera.CFrame = gameCamera.CFrame:Lerp(CFrame.lookAt(gameCamera.CFrame.p, ent.RootPart.Position), (AimSpeed.Value + (StrafeIncrease.Enabled and (inputService:IsKeyDown(Enum.KeyCode.A) or inputService:IsKeyDown(Enum.KeyCode.D)) and 10 or 0)) * dt)
 						end
