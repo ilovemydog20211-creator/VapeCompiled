@@ -36053,78 +36053,97 @@ run(function()
 	})
 end)
 run(function()
-    local BCR
-    local Value
-    local CpsConstants = nil
-    
-    BCR = vape.Categories.Blatant:CreateModule({
-        Name = "BlockCPSRemover",
-        Function = function(callback)
-            
-            if callback then
-                task.wait(1)
-                
-                pcall(function()
-                    CpsConstants = require(replicatedStorage.TS['shared-constants']).CpsConstants
-                end)
-                
-                if not CpsConstants then
-                    pcall(function()
-                        CpsConstants = bedwars.CpsConstants
-                    end)
-                end
-                
-                if CpsConstants then
-                    local newCPS = Value.Value == 0 and 1000 or Value.Value
-                    CpsConstants.BLOCK_PLACE_CPS = newCPS
-                    
-                    if isMobile then
-                        for _, v in {'2', '5'} do
-                            pcall(function()
-                                BCR:Clean(lplr.PlayerGui.MobileUI[v].MouseButton1Down:Connect(function()
-                                    if CpsConstants then
-                                        local currentValue = Value.Value == 0 and 1000 or Value.Value
-                                        CpsConstants.BLOCK_PLACE_CPS = currentValue
-                                    end
-                                end))
-                            end)
-                        end
-                    end
-                    
-                    task.spawn(function()
-                        while BCR.Enabled do
-                            local currentValue = Value.Value == 0 and 1000 or Value.Value
-                            if CpsConstants.BLOCK_PLACE_CPS ~= currentValue then
-                                CpsConstants.BLOCK_PLACE_CPS = currentValue
-                            end
-                            task.wait(0.3)
-                        end
-                    end)
-                end
-                
-            else
-                if CpsConstants then
-                    CpsConstants.BLOCK_PLACE_CPS = 12
-                end
-            end
-        end,
-        Tooltip = 'Simple CPS modifier (Mobile + Desktop)'
-    })
-    
-    Value = BCR:CreateSlider({
-        Name = "CPS Limit",
-        Suffix = "CPS",
-        Tooltip = "Higher = faster but more ghost blocks",
-        Default = 12,
-        Min = 12,
-        Max = 20,
-        Function = function()
-            if BCR.Enabled and CpsConstants then
-                local newCPS = Value.Value == 0 and 1000 or Value.Value
-                CpsConstants.BLOCK_PLACE_CPS = newCPS
-            end
-        end,
-    })
+	local BCR
+	local Value
+	local CpsConstants
+	local originalCPS
+	local runId = 0
+
+	local inputService = cloneref(game:GetService('UserInputService'))
+
+	local function getCpsConstants()
+		local ok, result = pcall(function()
+			return require(replicatedStorage.TS['shared-constants']).CpsConstants
+		end)
+		if ok and result then return result end
+		if bedwars and bedwars.CpsConstants then
+			return bedwars.CpsConstants
+		end
+	end
+
+	local function applyCPS()
+		if CpsConstants and Value then
+			CpsConstants.BLOCK_PLACE_CPS = Value.Value
+		end
+	end
+
+	BCR = vape.Categories.Blatant:CreateModule({
+		Name = "BlockCPSRemover",
+		Function = function(callback)
+			runId += 1
+			local myId = runId
+
+			if callback then
+				task.wait(1)
+				if not BCR.Enabled or myId ~= runId then return end
+
+				CpsConstants = getCpsConstants()
+				if not CpsConstants then
+					notif and notif('BlockCPSRemover', 'Could not find CpsConstants', 5, 'alert')
+					return
+				end
+
+				if originalCPS == nil then
+					originalCPS = CpsConstants.BLOCK_PLACE_CPS
+				end
+				applyCPS()
+
+				-- Mobile: reapply whenever the place buttons are pressed
+				if inputService.TouchEnabled then
+					task.spawn(function()
+						local mobileUI = lplr.PlayerGui:WaitForChild('MobileUI', 5)
+						if not mobileUI or myId ~= runId then return end
+						for _, name in {'2', '5'} do
+							local button = mobileUI:WaitForChild(name, 5)
+							if button and button:IsA('GuiButton') then
+								BCR:Clean(button.MouseButton1Down:Connect(applyCPS))
+							end
+						end
+					end)
+				end
+
+				-- Keep the value enforced in case the game resets it
+				task.spawn(function()
+					while BCR.Enabled and myId == runId do
+						if CpsConstants.BLOCK_PLACE_CPS ~= Value.Value then
+							applyCPS()
+						end
+						task.wait(0.3)
+					end
+				end)
+			else
+				if CpsConstants then
+					CpsConstants.BLOCK_PLACE_CPS = originalCPS or 12
+				end
+				originalCPS = nil
+			end
+		end,
+		Tooltip = 'Simple CPS modifier (Mobile + Desktop)'
+	})
+
+	Value = BCR:CreateSlider({
+		Name = "CPS Limit",
+		Suffix = "CPS",
+		Tooltip = "Higher = faster but more ghost blocks",
+		Default = 12,
+		Min = 12,
+		Max = 20,
+		Function = function()
+			if BCR.Enabled then
+				applyCPS()
+			end
+		end,
+	})
 end)
 run(function()
 	local TaxRemover
