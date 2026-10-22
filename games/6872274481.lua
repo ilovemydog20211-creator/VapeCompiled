@@ -36146,73 +36146,48 @@ end)
 run(function()
 	local BCR
 	local Value
-	local tables = {}
-	local originals = {}
+	local tables, originals = {}, {}
+	local runService = cloneref(game:GetService('RunService'))
 
 	local function notify(msg)
 		pcall(function()
-			if notif then
-				notif('BlockCPSRemover', msg, 5)
-			else
-				warn('[BlockCPSRemover] ' .. msg)
-			end
+			if notif then notif('BlockCPSRemover', msg, 6) else warn('[BCR] ' .. msg) end
 		end)
 	end
 
 	local function findTables()
 		table.clear(tables)
 		local seen = {}
-
-		local function add(t)
+		local function add(t, source)
 			if type(t) == 'table' and not seen[t] and rawget(t, 'BLOCK_PLACE_CPS') ~= nil then
 				seen[t] = true
 				table.insert(tables, t)
+				print('[BCR] found via ' .. source, rawget(t, 'BLOCK_PLACE_CPS'))
 			end
 		end
 
-		-- Method 1: require the module
-		pcall(function()
-			add(require(replicatedStorage.TS['shared-constants']).CpsConstants)
-		end)
+		pcall(function() add(bedwars.SharedConstants.CpsConstants, 'bedwars.SharedConstants') end)
+		pcall(function() add(bedwars.CpsConstants, 'bedwars.CpsConstants') end)
+		pcall(function() add(require(replicatedStorage.TS['shared-constants']).CpsConstants, 'require') end)
 
-		-- Method 2: bedwars table
-		pcall(function()
-			add(bedwars.CpsConstants)
-		end)
-
-		-- Method 3: scan the garbage collector for any matching table
 		if getgc then
 			pcall(function()
 				for _, v in getgc(true) do
-					if type(v) == 'table' then
-						add(v)
-					end
+					if type(v) == 'table' then add(v, 'getgc') end
 				end
 			end)
 		end
-
 		return #tables > 0
 	end
 
 	local function setValue(t, value)
-		pcall(function()
-			if setreadonly then setreadonly(t, false) end
-		end)
-		local ok = pcall(function()
-			rawset(t, 'BLOCK_PLACE_CPS', value)
-		end)
-		if not ok then
-			pcall(function()
-				t.BLOCK_PLACE_CPS = value
-			end)
-		end
+		pcall(function() if setreadonly then setreadonly(t, false) end end)
+		pcall(function() rawset(t, 'BLOCK_PLACE_CPS', value) end)
 	end
 
 	local function applyCPS()
 		for _, t in tables do
-			if originals[t] == nil then
-				originals[t] = rawget(t, 'BLOCK_PLACE_CPS')
-			end
+			if originals[t] == nil then originals[t] = rawget(t, 'BLOCK_PLACE_CPS') end
 			if rawget(t, 'BLOCK_PLACE_CPS') ~= Value.Value then
 				setValue(t, Value.Value)
 			end
@@ -36225,26 +36200,15 @@ run(function()
 			if callback then
 				task.wait(1)
 				if not BCR.Enabled then return end
-
 				if not findTables() then
-					notify('Could not find CpsConstants. Wrong game version?')
+					notify('Could not find CpsConstants')
 					return
 				end
-
 				applyCPS()
-				local sample = tables[1]
-				notify(('Found %d table(s). BLOCK_PLACE_CPS = %s'):format(#tables, tostring(rawget(sample, 'BLOCK_PLACE_CPS'))))
-
-				BCR:Clean(task.spawn(function()
-					while BCR.Enabled do
-						applyCPS()
-						task.wait(0.25)
-					end
-				end))
+				notify(('Set %d table(s) to %s CPS'):format(#tables, tostring(Value.Value)))
+				BCR:Clean(runService.Heartbeat:Connect(applyCPS))
 			else
-				for t, original in pairs(originals) do
-					setValue(t, original)
-				end
+				for t, original in pairs(originals) do setValue(t, original) end
 				table.clear(originals)
 				table.clear(tables)
 			end
@@ -36260,9 +36224,7 @@ run(function()
 		Min = 1,
 		Max = 100,
 		Function = function()
-			if BCR.Enabled then
-				applyCPS()
-			end
+			if BCR.Enabled then applyCPS() end
 		end
 	})
 end)
