@@ -34758,7 +34758,7 @@ run(function()
 	end
 
 	SilentAura = vape.Categories.Combat:CreateModule({
-		Name = 'SilentAura(aero - testing)',
+		Name = 'SilentAura',
 		Function = function(callback)
 			if not callback then return end
 			task.spawn(function()
