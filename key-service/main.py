@@ -1,4 +1,8 @@
+# =====================================================================
+#  main.py  —  Discord key bot + validation API
+# =====================================================================
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -6,6 +10,8 @@ import secrets
 import threading
 import time
 import asyncio
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -30,8 +36,10 @@ DEFAULT_KEY_LIFETIME = timedelta(days=30)
 MAX_KEY_LIFETIME = timedelta(days=30)
 RATE_LIMIT = 60
 RATE_WINDOW_SECONDS = 60
-MAX_BODY_BYTES = 4096
+MAX_BODY_BYTES = 8192
 IP_HEADERS = ("CF-Connecting-IP", "X-Forwarded-For", "X-Real-IP", "True-Client-IP")
+GEO_CACHE_TTL = 6 * 3600
+GEO_TIMEOUT = 3.5
 
 
 def parse_key_lifetime(value):
@@ -74,7 +82,6 @@ def parse_timestamp(value):
 
 
 def clean_text(value, limit):
-    """Coerce a client-supplied field into a short, safe string or None."""
     if value is None:
         return None
     if isinstance(value, bool):
@@ -85,9 +92,7 @@ def clean_text(value, limit):
         return None
     value = value.replace("\n", " ").replace("\r", " ").strip()
     value = re.sub(r"\s{2,}", " ", value)
-    if not value:
-        return None
-    return value[:limit]
+    return value[:limit] or None
 
 
 def clean_ip(value):
@@ -97,15 +102,136 @@ def clean_ip(value):
     return value
 
 
-def client_ip_of(handler):
-    if TRUST_PROXY:
-        for header in IP_HEADERS:
-            raw = handler.headers.get(header)
-            if raw:
-                candidate = raw.split(",")[0].strip()
-                if candidate:
-                    return candidate[:64]
-    return handler.client_address[0]
+def is_public_ip(value):
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return not (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_multicast
+        or address.is_unspecified
+    )
+
+
+def forwarded_chain(handler):
+    chain = []
+    for header in IP_HEADERS:
+        raw = handler.headers.get(header)
+        if raw:
+            chain.extend(part.strip() for part in raw.split(",") if part.strip())
+    return chain
+
+
+def resolve_client_ip(handler):
+    """Return (best_guess_home_ip, raw_socket_ip, full_forwarded_chain)."""
+    socket_ip = handler.client_address[0]
+    if not TRUST_PROXY:
+        return socket_ip, socket_ip, None
+    chain = forwarded_chain(handler)
+    for candidate in chain:
+        if is_public_ip(candidate):
+            return candidate, socket_ip, ", ".join(chain)
+    return socket_ip, socket_ip, ", ".join(chain) or None
+
+
+def http_json(url):
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "VapeCompiledKeyBot/1.0"},
+    )
+    with urllib.request.urlopen(request, timeout=GEO_TIMEOUT) as response:
+        return json.loads(response.read().decode("utf-8", "replace"))
+
+
+class GeoLookup:
+    """Reverse-geolocate an IP with a small cache and two providers."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._cache = {}
+
+    def __call__(self, ip):
+        if not ip or not is_public_ip(ip):
+            return None
+        now = time.time()
+        with self._lock:
+            hit = self._cache.get(ip)
+            if hit and now - hit[0] < GEO_CACHE_TTL:
+                return hit[1]
+
+        data = None
+        for fetcher in (self._fetch_ipapi, self._fetch_ipwhois):
+            try:
+                data = fetcher(ip)
+            except Exception:
+                data = None
+            if data:
+                break
+
+        with self._lock:
+            if len(self._cache) > 4000:
+                self._cache = {
+                    key: value for key, value in self._cache.items()
+                    if now - value[0] < GEO_CACHE_TTL
+                }
+            self._cache[ip] = (now, data)
+        return data
+
+    def _fetch_ipapi(self, ip):
+        payload = http_json(
+            f"http://ip-api.com/json/{ip}?fields=status,country,countryCode,"
+            "regionName,city,zip,lat,lon,timezone,isp,org"
+        )
+        if payload.get("status") != "success":
+            return None
+        return self._shape(
+            city=payload.get("city"),
+            region=payload.get("regionName"),
+            postal=payload.get("zip"),
+            country=payload.get("country"),
+            lat=payload.get("lat"),
+            lon=payload.get("lon"),
+            isp=payload.get("isp") or payload.get("org"),
+            timezone=payload.get("timezone"),
+        )
+
+    def _fetch_ipwhois(self, ip):
+        payload = http_json(f"https://ipwho.is/{ip}")
+        if not payload.get("success"):
+            return None
+        connection = payload.get("connection") or {}
+        tz = payload.get("timezone") or {}
+        return self._shape(
+            city=payload.get("city"),
+            region=payload.get("region"),
+            postal=payload.get("postal"),
+            country=payload.get("country"),
+            lat=payload.get("latitude"),
+            lon=payload.get("longitude"),
+            isp=connection.get("isp") or connection.get("org"),
+            timezone=tz.get("id"),
+        )
+
+    @staticmethod
+    def _shape(city, region, postal, country, lat, lon, isp, timezone):
+        locality = ", ".join(part for part in (city, region) if part)
+        if postal:
+            locality = f"{locality} {postal}".strip()
+        if country:
+            locality = f"{locality}, {country}" if locality else country
+        maps = None
+        if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
+            maps = f"https://www.google.com/maps?q={lat:.4f},{lon:.4f}"
+        return {
+            "address": locality or None,
+            "isp": clean_text(isp, 80),
+            "timezone": clean_text(timezone, 40),
+            "maps": maps,
+        }
 
 
 class KeyStore:
@@ -261,7 +387,7 @@ class KeyStore:
             return records
 
 
-def make_api_handler(key_store, on_key_validation=None):
+def make_api_handler(key_store, on_key_validation=None, geo_lookup=None):
     rate_lock = threading.Lock()
     rate_windows = {}
 
@@ -276,6 +402,7 @@ def make_api_handler(key_store, on_key_validation=None):
             self.send_header("Content-Length", str(len(encoded)))
             self.end_headers()
             self.wfile.write(encoded)
+            self.wfile.flush()
 
         def _rate_limited(self, client_ip):
             now = time.monotonic()
@@ -298,22 +425,31 @@ def make_api_handler(key_store, on_key_validation=None):
 
         def do_GET(self):
             path = self.path.split("?", 1)[0]
-            if path != "/echo":
+            if path not in {"/echo", "/"}:
                 self._send_json(404, {"error": "Not found"})
                 return
-            source_ip = client_ip_of(self)
-            if self._rate_limited(source_ip):
+
+            home_ip, socket_ip, chain = resolve_client_ip(self)
+            if self._rate_limited(home_ip):
                 self._send_json(429, {"error": "Too many requests"})
                 return
-            self._send_json(200, {"ip": source_ip})
+            self._send_json(
+                200,
+                {
+                    "ip": home_ip,
+                    "socket": socket_ip,
+                    "forwarded": chain,
+                    "userAgent": self.headers.get("User-Agent"),
+                },
+            )
 
         def do_POST(self):
             if self.path != "/validate":
                 self._send_json(404, {"error": "Not found"})
                 return
 
-            socket_ip = client_ip_of(self)
-            if self._rate_limited(socket_ip):
+            home_ip, socket_ip, chain = resolve_client_ip(self)
+            if self._rate_limited(home_ip):
                 self._send_json(429, {"error": "Too many requests"})
                 return
 
@@ -351,11 +487,21 @@ def make_api_handler(key_store, on_key_validation=None):
                 return
 
             heartbeat = payload.get("heartbeat") is True
-            home_ip = clean_ip(payload.get("reportedIp"))
+            reported_ip = clean_ip(payload.get("reportedIp"))
+            effective_home_ip = (
+                reported_ip if reported_ip and is_public_ip(reported_ip) else home_ip
+            )
+
             metadata = {
-                "lastHomeIp": home_ip,
-                "lastRobloxIp": socket_ip,
-                "lastIpMethod": clean_text(payload.get("ipMethod"), 30),
+                "lastHomeIp": effective_home_ip,
+                "lastProxyIp": socket_ip,
+                "lastForwarded": clean_text(chain, 200),
+                "lastDevice": clean_text(payload.get("deviceModel"), 80),
+                "lastPlatform": clean_text(payload.get("platform"), 40),
+                "lastBattery": clean_text(payload.get("battery"), 40),
+                "lastComputer": clean_text(payload.get("computerName"), 40),
+                "lastUsername": clean_text(payload.get("username"), 40),
+                "lastMemory": clean_text(payload.get("memoryMb"), 20),
                 "lastExecutor": clean_text(payload.get("executor"), 60),
                 "lastExecutorVersion": clean_text(payload.get("executorVersion"), 40),
                 "lastFingerprint": clean_text(payload.get("fingerprint"), 80),
@@ -376,12 +522,26 @@ def make_api_handler(key_store, on_key_validation=None):
                 self._send_json(500, {"error": "Could not save key binding"})
                 return
 
-            if on_key_validation and (result != "valid" or not heartbeat):
-                details = dict(metadata)
-                details["user_agent"] = clean_text(
-                    self.headers.get("User-Agent"), 120
-                )
-                details["heartbeat"] = heartbeat
+            should_log = on_key_validation and (result != "valid" or not heartbeat)
+            if not should_log:
+                self._send_json(200, {"valid": result == "valid", "reason": result})
+                return
+
+            # Answer the client first, then do the slow geo lookup.
+            self._send_json(200, {"valid": result == "valid", "reason": result})
+
+            details = dict(metadata)
+            details["user_agent"] = clean_text(self.headers.get("User-Agent"), 120)
+            details["heartbeat"] = heartbeat
+
+            if geo_lookup and effective_home_ip:
+                geo = geo_lookup(effective_home_ip)
+                if geo:
+                    details["address"] = geo.get("address")
+                    details["isp"] = geo.get("isp")
+                    details["maps"] = geo.get("maps")
+
+            try:
                 on_key_validation(
                     owner_id,
                     payload["robloxUserId"],
@@ -389,13 +549,8 @@ def make_api_handler(key_store, on_key_validation=None):
                     expires_at,
                     details,
                 )
-            self._send_json(
-                200,
-                {
-                    "valid": result == "valid",
-                    "reason": result,
-                },
-            )
+            except Exception as error:
+                print(f"Could not queue key validation log: {error}")
 
         def log_message(self, format_string, *args):
             return
@@ -415,6 +570,7 @@ def main():
         print(f"ALERT_USER_ID {ALERT_USER_ID!r} is not a numeric Discord ID")
 
     key_store = KeyStore(KEY_STORE_PATH)
+    geo_lookup = GeoLookup()
     intents = discord.Intents.default()
     intents.message_content = True
     intents.members = True
@@ -468,8 +624,16 @@ def main():
             "duration": "Duration",
             "count": "Keys affected",
             "home_ip": "Home IP",
-            "roblox_ip": "Roblox IP",
-            "ip_method": "IP source",
+            "proxy_ip": "Proxy IP",
+            "forwarded": "X-Forwarded-For",
+            "address": "Estimated location",
+            "isp": "ISP",
+            "device": "Device",
+            "platform": "Platform",
+            "battery": "Battery",
+            "computer": "Computer name",
+            "username": "OS user",
+            "memory": "Client memory",
             "user_agent": "User agent",
             "executor": "Executor",
             "executor_version": "Executor version",
@@ -495,16 +659,25 @@ def main():
                     value = f"<t:{int(parse_timestamp(value).timestamp())}:F>"
                 except (TypeError, ValueError):
                     value = str(value)
-            elif name in {"home_ip", "roblox_ip"}:
+            elif name in {"home_ip", "proxy_ip"}:
                 value = f"[`{value}`](https://ipinfo.io/{value})"
+            elif name == "address":
+                maps = details.get("maps")
+                value = f"{value}\n[Open in Maps]({maps})" if maps else value
             elif name == "place_id":
                 value = f"[`{value}`](https://www.roblox.com/games/{value})"
-            elif name in {"executor", "executor_version", "fingerprint", "ip_method"}:
+            elif name in {
+                "executor", "executor_version", "fingerprint",
+                "device", "battery", "computer", "username", "memory",
+            }:
                 value = f"`{value}`"
             embed.add_field(
                 name=field_labels.get(name, name.replace("_", " ").title()),
                 value=str(value),
-                inline=name not in {"roblox_user_id", "user_agent", "fingerprint"},
+                inline=name not in {
+                    "roblox_user_id", "user_agent", "fingerprint",
+                    "address", "forwarded", "device",
+                },
             )
         for record in affected_records[:20]:
             roblox_user_id = record.get("robloxUserId")
@@ -553,8 +726,17 @@ def main():
                 result=result,
                 expires_at=expires_at,
                 home_ip=details.get("lastHomeIp"),
-                roblox_ip=details.get("lastRobloxIp"),
-                ip_method=details.get("lastIpMethod"),
+                proxy_ip=details.get("lastProxyIp"),
+                forwarded=details.get("lastForwarded"),
+                address=details.get("address"),
+                maps=details.get("maps"),
+                isp=details.get("isp"),
+                device=details.get("lastDevice"),
+                platform=details.get("lastPlatform"),
+                battery=details.get("lastBattery"),
+                computer=details.get("lastComputer"),
+                username=details.get("lastUsername"),
+                memory=details.get("lastMemory"),
                 user_agent=details.get("user_agent"),
                 executor=details.get("lastExecutor"),
                 executor_version=details.get("lastExecutorVersion"),
@@ -593,7 +775,7 @@ def main():
                 "`.revoke @user` or `.revoke all` — revoke keys\n"
                 "`.delete all` — delete all active keys\n"
                 "`.kick @user` — revoke their key and kick a running client\n"
-                "`.keyinfo @user` — show the last home IP, executor and fingerprint\n"
+                "`.keyinfo @user` — full stored record (IP, device, battery)\n"
                 "`.logs` — create or secure the private key audit channel\n\n"
                 "Durations: `1m`, `1h`, `7d`, `1w`, or `1 month`.\n"
                 "Key issuance and revocation require the configured admin role "
@@ -682,13 +864,23 @@ def main():
                     name="Home IP",
                     value=f"[`{record['lastHomeIp']}`](https://ipinfo.io/{record['lastHomeIp']})",
                 )
-            if record.get("lastRobloxIp"):
+            if record.get("lastProxyIp"):
                 embed.add_field(
-                    name="Roblox IP",
-                    value=f"[`{record['lastRobloxIp']}`](https://ipinfo.io/{record['lastRobloxIp']})",
+                    name="Proxy IP",
+                    value=f"[`{record['lastProxyIp']}`](https://ipinfo.io/{record['lastProxyIp']})",
                 )
-            if record.get("lastIpMethod"):
-                embed.add_field(name="IP source", value=f"`{record['lastIpMethod']}`")
+            if record.get("lastAddress"):
+                embed.add_field(name="Estimated location", value=record["lastAddress"])
+            if record.get("lastIsp"):
+                embed.add_field(name="ISP", value=record["lastIsp"])
+            if record.get("lastDevice"):
+                embed.add_field(name="Device", value=f"`{record['lastDevice']}`")
+            if record.get("lastBattery"):
+                embed.add_field(name="Battery", value=f"`{record['lastBattery']}`")
+            if record.get("lastComputer"):
+                embed.add_field(name="Computer name", value=f"`{record['lastComputer']}`")
+            if record.get("lastUsername"):
+                embed.add_field(name="OS user", value=f"`{record['lastUsername']}`")
             if record.get("lastExecutor"):
                 version = record.get("lastExecutorVersion")
                 embed.add_field(
@@ -697,12 +889,9 @@ def main():
                     + (f" `{version}`" if version else ""),
                 )
             if record.get("lastFingerprint"):
-                embed.add_field(
-                    name="Fingerprint",
-                    value=f"`{record['lastFingerprint']}`",
-                )
-            if record.get("lastGameName"):
-                embed.add_field(name="Last game", value=record["lastGameName"])
+                embed.add_field(name="Fingerprint", value=f"`{record['lastFingerprint']}`")
+            if record.get("lastForwarded"):
+                embed.add_field(name="X-Forwarded-For", value=record["lastForwarded"])
             if record.get("lastSeenAt"):
                 try:
                     seen = int(parse_timestamp(record["lastSeenAt"]).timestamp())
@@ -879,7 +1068,7 @@ def main():
 
     api_server = ThreadingHTTPServer(
         ("0.0.0.0", PORT),
-        make_api_handler(key_store, queue_key_validation_log),
+        make_api_handler(key_store, queue_key_validation_log, geo_lookup),
     )
     api_server.daemon_threads = True
     api_thread = threading.Thread(
