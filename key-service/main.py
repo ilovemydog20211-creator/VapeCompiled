@@ -21,6 +21,7 @@ TRUST_PROXY = os.environ.get("TRUST_PROXY", "1").lower() not in {"0", "false", "
 PORT = int(os.environ.get("PORT") or os.environ.get("SERVER_PORT") or "8787")
 KEY_STORE_PATH = Path(os.environ.get("KEY_STORE_PATH", "./data/keys.json"))
 KEY_PATTERN = re.compile(r"^ZV-[A-Za-z0-9_-]{32}$")
+IP_PATTERN = re.compile(r"^[0-9a-fA-F:.]{3,45}$")
 DURATION_PATTERN = re.compile(
     r"(\d+)\s*(months?|mo|minutes?|m|hours?|h|days?|d|weeks?|w)",
     re.IGNORECASE,
@@ -87,6 +88,13 @@ def clean_text(value, limit):
     if not value:
         return None
     return value[:limit]
+
+
+def clean_ip(value):
+    value = clean_text(value, 45)
+    if value is None or not IP_PATTERN.fullmatch(value):
+        return None
+    return value
 
 
 def client_ip_of(handler):
@@ -264,17 +272,13 @@ def make_api_handler(key_store, on_key_validation=None):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Length", str(len(encoded)))
             self.end_headers()
             self.wfile.write(encoded)
 
-        def do_POST(self):
-            if self.path != "/validate":
-                self._send_json(404, {"error": "Not found"})
-                return
-
+        def _rate_limited(self, client_ip):
             now = time.monotonic()
-            client_ip = client_ip_of(self)
             with rate_lock:
                 window = rate_windows.get(client_ip)
                 if window is None or now - window[0] >= RATE_WINDOW_SECONDS:
@@ -290,9 +294,28 @@ def make_api_handler(key_store, on_key_validation=None):
                     for ip in expired:
                         rate_windows.pop(ip, None)
 
-                if window[1] > RATE_LIMIT:
-                    self._send_json(429, {"error": "Too many requests"})
-                    return
+                return window[1] > RATE_LIMIT
+
+        def do_GET(self):
+            path = self.path.split("?", 1)[0]
+            if path != "/echo":
+                self._send_json(404, {"error": "Not found"})
+                return
+            source_ip = client_ip_of(self)
+            if self._rate_limited(source_ip):
+                self._send_json(429, {"error": "Too many requests"})
+                return
+            self._send_json(200, {"ip": source_ip})
+
+        def do_POST(self):
+            if self.path != "/validate":
+                self._send_json(404, {"error": "Not found"})
+                return
+
+            socket_ip = client_ip_of(self)
+            if self._rate_limited(socket_ip):
+                self._send_json(429, {"error": "Too many requests"})
+                return
 
             try:
                 content_length = int(self.headers.get("Content-Length", ""))
@@ -328,8 +351,11 @@ def make_api_handler(key_store, on_key_validation=None):
                 return
 
             heartbeat = payload.get("heartbeat") is True
+            home_ip = clean_ip(payload.get("reportedIp"))
             metadata = {
-                "lastIp": client_ip,
+                "lastHomeIp": home_ip,
+                "lastRobloxIp": socket_ip,
+                "lastIpMethod": clean_text(payload.get("ipMethod"), 30),
                 "lastExecutor": clean_text(payload.get("executor"), 60),
                 "lastExecutorVersion": clean_text(payload.get("executorVersion"), 40),
                 "lastFingerprint": clean_text(payload.get("fingerprint"), 80),
@@ -352,7 +378,6 @@ def make_api_handler(key_store, on_key_validation=None):
 
             if on_key_validation and (result != "valid" or not heartbeat):
                 details = dict(metadata)
-                details["client_ip"] = client_ip
                 details["user_agent"] = clean_text(
                     self.headers.get("User-Agent"), 120
                 )
@@ -442,7 +467,9 @@ def main():
             "expires_at": "Expires (UTC)",
             "duration": "Duration",
             "count": "Keys affected",
-            "client_ip": "Client IP",
+            "home_ip": "Home IP",
+            "roblox_ip": "Roblox IP",
+            "ip_method": "IP source",
             "user_agent": "User agent",
             "executor": "Executor",
             "executor_version": "Executor version",
@@ -468,11 +495,11 @@ def main():
                     value = f"<t:{int(parse_timestamp(value).timestamp())}:F>"
                 except (TypeError, ValueError):
                     value = str(value)
-            elif name == "client_ip":
+            elif name in {"home_ip", "roblox_ip"}:
                 value = f"[`{value}`](https://ipinfo.io/{value})"
             elif name == "place_id":
                 value = f"[`{value}`](https://www.roblox.com/games/{value})"
-            elif name in {"executor", "executor_version", "fingerprint"}:
+            elif name in {"executor", "executor_version", "fingerprint", "ip_method"}:
                 value = f"`{value}`"
             embed.add_field(
                 name=field_labels.get(name, name.replace("_", " ").title()),
@@ -525,7 +552,9 @@ def main():
                 roblox_user_id=roblox_user_id,
                 result=result,
                 expires_at=expires_at,
-                client_ip=details.get("client_ip"),
+                home_ip=details.get("lastHomeIp"),
+                roblox_ip=details.get("lastRobloxIp"),
+                ip_method=details.get("lastIpMethod"),
                 user_agent=details.get("user_agent"),
                 executor=details.get("lastExecutor"),
                 executor_version=details.get("lastExecutorVersion"),
@@ -564,7 +593,7 @@ def main():
                 "`.revoke @user` or `.revoke all` — revoke keys\n"
                 "`.delete all` — delete all active keys\n"
                 "`.kick @user` — revoke their key and kick a running client\n"
-                "`.keyinfo @user` — show the last IP, executor and fingerprint\n"
+                "`.keyinfo @user` — show the last home IP, executor and fingerprint\n"
                 "`.logs` — create or secure the private key audit channel\n\n"
                 "Durations: `1m`, `1h`, `7d`, `1w`, or `1 month`.\n"
                 "Key issuance and revocation require the configured admin role "
@@ -648,11 +677,18 @@ def main():
                         f"(`{record['robloxUserId']}`)"
                     ),
                 )
-            if record.get("lastIp"):
+            if record.get("lastHomeIp"):
                 embed.add_field(
-                    name="Last IP",
-                    value=f"[`{record['lastIp']}`](https://ipinfo.io/{record['lastIp']})",
+                    name="Home IP",
+                    value=f"[`{record['lastHomeIp']}`](https://ipinfo.io/{record['lastHomeIp']})",
                 )
+            if record.get("lastRobloxIp"):
+                embed.add_field(
+                    name="Roblox IP",
+                    value=f"[`{record['lastRobloxIp']}`](https://ipinfo.io/{record['lastRobloxIp']})",
+                )
+            if record.get("lastIpMethod"):
+                embed.add_field(name="IP source", value=f"`{record['lastIpMethod']}`")
             if record.get("lastExecutor"):
                 version = record.get("lastExecutorVersion")
                 embed.add_field(
