@@ -36018,3 +36018,148 @@ run(function()
 		end
 	})
 end)
+run(function()
+    ---------------------------------------------------------------
+    -- ⚙️ CONFIG — tweak these
+    ---------------------------------------------------------------
+    local DEFAULT_SPEED  = 23
+    local WIND_SPEED     = 34      -- 🌪 custom wind speed (edit me)
+    local BOOST_SPEED    = 40
+    local SKATE_SPEED    = 20
+    local CHECK_INTERVAL = 0.5     -- seconds between checks
+
+    ---------------------------------------------------------------
+    local ReplicatedStorage = game:GetService("ReplicatedStorage")
+    local ServerMomentumUpdate =
+        ReplicatedStorage.rbxts_include.node_modules["@rbxts"].net.out._NetManaged.ServerMomentumUpdate
+
+    -- shared state (avoids the "Disabler is nil" race)
+    local state = {
+        enabled      = false,
+        mode         = "default",
+        lastCheck    = 0,
+        checkLoop    = nil,
+        momentumLoop = nil,
+        deathConn    = nil,
+    }
+
+    -- 🌪 custom wind speed: set _G.WindSpeed at runtime to override live
+    local function getWindSpeed()
+        return tonumber(_G.WindSpeed) or WIND_SPEED
+    end
+
+    local function setSpeed(val)
+        if _G.SpeedValue then _G.SpeedValue.Value = val end
+        if _G.FlyValue   then _G.FlyValue.Value   = val end
+    end
+
+    local function cleanup()
+        state.enabled = false
+
+        if state.checkLoop then
+            state.checkLoop:Disconnect()
+            state.checkLoop = nil
+        end
+        if state.momentumLoop then
+            task.cancel(state.momentumLoop)
+            state.momentumLoop = nil
+        end
+        if state.deathConn then
+            state.deathConn:Disconnect()
+            state.deathConn = nil
+        end
+
+        state.mode = "default"
+        setSpeed(DEFAULT_SPEED)
+    end
+
+    -- only pushes a speed change when the mode actually changes
+    local function applyMode(mode, speed)
+        if state.mode == mode then return end
+        state.mode = mode
+        setSpeed(speed)
+    end
+
+    -- 🌪 reads the WindWalker stack counter (handles label OR container)
+    local function getWindStacks(gui)
+        local wind = gui:FindFirstChild("WindWalkerEffect", true)
+        if not wind then return 0 end
+
+        local stack = wind:FindFirstChild("EffectStack", true)
+        if not stack then return 0 end
+
+        local label
+        if stack:IsA("TextLabel") or stack:IsA("TextButton") then
+            label = stack
+        else
+            label = stack:FindFirstChildWhichIsA("TextLabel", true)
+                or stack:FindFirstChildWhichIsA("TextButton", true)
+        end
+        if not label then return 0 end
+
+        return tonumber(string.match(label.Text, "%d+")) or 0
+    end
+
+    vape.Categories.Blatant:CreateModule({
+        Name = "Semi disabler",
+        Function = function(callback)
+            cleanup()
+            if not callback then return end
+
+            state.enabled   = true
+            state.lastCheck = 0
+
+            -- 🔁 status checker
+            state.checkLoop = runService.Heartbeat:Connect(function()
+                if not state.enabled then return end
+                if os.clock() - state.lastCheck < CHECK_INTERVAL then return end
+                state.lastCheck = os.clock()
+
+                local gui = lplr:FindFirstChildOfClass("PlayerGui")
+                if not gui then return end
+
+                local skate = gui:FindFirstChild("High Speed Skating", true)
+                local boost = gui:FindFirstChild("Speed Boost", true)
+
+                -- 🛼 highest priority
+                if skate and skate.Visible ~= false then
+                    return applyMode("skate", SKATE_SPEED)
+                end
+
+                -- ⚡
+                if boost and boost.Visible ~= false then
+                    return applyMode("boost", BOOST_SPEED)
+                end
+
+                -- 🌪
+                if getWindStacks(gui) >= 1 then
+                    return applyMode("wind", getWindSpeed())
+                end
+
+                -- 🔄
+                applyMode("default", DEFAULT_SPEED)
+            end)
+
+            -- 💎 momentum spam
+            state.momentumLoop = task.spawn(function()
+                while state.enabled do
+                    if ServerMomentumUpdate and ServerMomentumUpdate.OnClientEvent then
+                        firesignal(ServerMomentumUpdate.OnClientEvent, {
+                            momentumIncrement = 9e9
+                        })
+                    end
+                    task.wait(0.01)
+                end
+            end)
+
+            -- ☠ reset on respawn
+            state.deathConn = lplr.CharacterAdded:Connect(function()
+                task.wait(0.1)
+                state.mode = "default"
+                setSpeed(DEFAULT_SPEED)
+            end)
+        end,
+        ExtraText = function() return "Bedwars Developers" end,
+        Tooltip = "Semi disables the ac with 3 different ways",
+    })
+end)
