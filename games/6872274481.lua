@@ -36146,93 +36146,123 @@ end)
 run(function()
 	local BCR
 	local Value
-	local CpsConstants
-	local originalCPS
-	local runId = 0
+	local tables = {}
+	local originals = {}
 
-	local inputService = cloneref(game:GetService('UserInputService'))
-
-	local function getCpsConstants()
-		local ok, result = pcall(function()
-			return require(replicatedStorage.TS['shared-constants']).CpsConstants
+	local function notify(msg)
+		pcall(function()
+			if notif then
+				notif('BlockCPSRemover', msg, 5)
+			else
+				warn('[BlockCPSRemover] ' .. msg)
+			end
 		end)
-		if ok and result then return result end
-		if bedwars and bedwars.CpsConstants then
-			return bedwars.CpsConstants
+	end
+
+	local function findTables()
+		table.clear(tables)
+		local seen = {}
+
+		local function add(t)
+			if type(t) == 'table' and not seen[t] and rawget(t, 'BLOCK_PLACE_CPS') ~= nil then
+				seen[t] = true
+				table.insert(tables, t)
+			end
+		end
+
+		-- Method 1: require the module
+		pcall(function()
+			add(require(replicatedStorage.TS['shared-constants']).CpsConstants)
+		end)
+
+		-- Method 2: bedwars table
+		pcall(function()
+			add(bedwars.CpsConstants)
+		end)
+
+		-- Method 3: scan the garbage collector for any matching table
+		if getgc then
+			pcall(function()
+				for _, v in getgc(true) do
+					if type(v) == 'table' then
+						add(v)
+					end
+				end
+			end)
+		end
+
+		return #tables > 0
+	end
+
+	local function setValue(t, value)
+		pcall(function()
+			if setreadonly then setreadonly(t, false) end
+		end)
+		local ok = pcall(function()
+			rawset(t, 'BLOCK_PLACE_CPS', value)
+		end)
+		if not ok then
+			pcall(function()
+				t.BLOCK_PLACE_CPS = value
+			end)
 		end
 	end
 
 	local function applyCPS()
-		if CpsConstants and Value then
-			CpsConstants.BLOCK_PLACE_CPS = Value.Value
+		for _, t in tables do
+			if originals[t] == nil then
+				originals[t] = rawget(t, 'BLOCK_PLACE_CPS')
+			end
+			if rawget(t, 'BLOCK_PLACE_CPS') ~= Value.Value then
+				setValue(t, Value.Value)
+			end
 		end
 	end
 
 	BCR = vape.Categories.Blatant:CreateModule({
-		Name = "BlockCPSRemover",
+		Name = 'BlockCPSRemover',
 		Function = function(callback)
-			runId += 1
-			local myId = runId
-
 			if callback then
 				task.wait(1)
-				if not BCR.Enabled or myId ~= runId then return end
+				if not BCR.Enabled then return end
 
-				CpsConstants = getCpsConstants()
-				if not CpsConstants then
-					notif and notif('BlockCPSRemover', 'Could not find CpsConstants', 5, 'alert')
+				if not findTables() then
+					notify('Could not find CpsConstants. Wrong game version?')
 					return
 				end
 
-				if originalCPS == nil then
-					originalCPS = CpsConstants.BLOCK_PLACE_CPS
-				end
 				applyCPS()
+				local sample = tables[1]
+				notify(('Found %d table(s). BLOCK_PLACE_CPS = %s'):format(#tables, tostring(rawget(sample, 'BLOCK_PLACE_CPS'))))
 
-				-- Mobile: reapply whenever the place buttons are pressed
-				if inputService.TouchEnabled then
-					task.spawn(function()
-						local mobileUI = lplr.PlayerGui:WaitForChild('MobileUI', 5)
-						if not mobileUI or myId ~= runId then return end
-						for _, name in {'2', '5'} do
-							local button = mobileUI:WaitForChild(name, 5)
-							if button and button:IsA('GuiButton') then
-								BCR:Clean(button.MouseButton1Down:Connect(applyCPS))
-							end
-						end
-					end)
-				end
-
-				-- Keep the value enforced in case the game resets it
-				task.spawn(function()
-					while BCR.Enabled and myId == runId do
-						if CpsConstants.BLOCK_PLACE_CPS ~= Value.Value then
-							applyCPS()
-						end
-						task.wait(0.3)
+				BCR:Clean(task.spawn(function()
+					while BCR.Enabled do
+						applyCPS()
+						task.wait(0.25)
 					end
-				end)
+				end))
 			else
-				if CpsConstants then
-					CpsConstants.BLOCK_PLACE_CPS = originalCPS or 12
+				for t, original in pairs(originals) do
+					setValue(t, original)
 				end
-				originalCPS = nil
+				table.clear(originals)
+				table.clear(tables)
 			end
 		end,
-		Tooltip = 'Simple CPS modifier (Mobile + Desktop)'
+		Tooltip = 'Changes the block place CPS limit'
 	})
 
 	Value = BCR:CreateSlider({
-		Name = "CPS Limit",
-		Suffix = "CPS",
-		Tooltip = "Higher = faster but more ghost blocks",
-		Default = 12,
-		Min = 12,
-		Max = 20,
+		Name = 'CPS Limit',
+		Suffix = 'CPS',
+		Tooltip = 'Higher = faster but more ghost blocks',
+		Default = 30,
+		Min = 1,
+		Max = 100,
 		Function = function()
 			if BCR.Enabled then
 				applyCPS()
 			end
-		end,
+		end
 	})
 end)
