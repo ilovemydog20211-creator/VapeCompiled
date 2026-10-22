@@ -36103,3 +36103,112 @@ run(function()
 		end
 	})
 end)
+To make this work like the `BlockCPSRemover` module, we need to restructure it so that the logic is decoupled from the toggle. In the "Vape" style, the `Function` handles the toggle (on/off), while `CreateSlider` or `CreateDropdown` handles the value changes in real-time.
+
+I have added a `Config` table that is updated by the dropdowns and a `setSpeed` function that handles both the global values and the direct `Humanoid` fallback to ensure it actually works.
+
+```lua
+run(function()
+    local Disabler
+    local runService = cloneref(game:GetService('RunService'))
+    
+    -- Configuration table for custom speeds
+    local Config = {
+        Default = 23,
+        Wind = 34,
+        Boost = 40,
+        Skate = 20,
+    }
+
+    local currentMode = "default"
+    local lastCheck = 0
+
+    local ReplicatedStorage = game:GetService("ReplicatedStorage")
+    -- Safe check for the momentum remote
+    local ServerMomentumUpdate = pcall(function() 
+        return ReplicatedStorage.rbxts_include.node_modules["@rbxts"].net.out._NetManaged.ServerMomentumUpdate 
+    end) and ReplicatedStorage.rbxts_include.node_modules["@rbxts"].net.out._NetManaged.ServerMomentumUpdate or nil
+
+    local function setSpeed(val)
+        -- Priority 1: Global speed values (used by most high-end scripts)
+        if _G.SpeedValue then
+            _G.SpeedValue.Value = val
+        end
+        if _G.FlyValue then
+            _G.FlyValue.Value = val
+        end
+        -- Priority 2: Direct Humanoid modification (Fallback)
+        pcall(function()
+            local char = lplr.Character
+            if char and char:FindFirstChild("Humanoid") then
+                char.Humanoid.WalkSpeed = val
+            end
+        end)
+    end
+
+    local function cleanupDisabler()
+        if Disabler.CheckLoop then Disabler.CheckLoop:Disconnect() end
+        if Disabler.MomentumLoop then 
+            pcall(function() task.cancel(Disabler.MomentumLoop) end) 
+        end
+        if Disabler.DeathConn then Disabler.DeathConn:Disconnect() end
+        
+        currentMode = "default"
+        setSpeed(Config.Default)
+    end
+
+    Disabler = vape.Categories.Blatant:CreateModule({
+        Name = 'Semi disabler',
+        Function = function(callback)
+            if callback then
+                -- Start Loops
+                Disabler.CheckLoop = runService.Heartbeat:Connect(function()
+                    if tick() - lastCheck < 0.5 then return end
+                    lastCheck = tick()
+
+                    local playerGui = lplr:FindFirstChildOfClass("PlayerGui")
+                    if not playerGui then return end
+
+                    local wind = playerGui:FindFirstChild("WindWalkerEffect", true)
+                    local boost = playerGui:FindFirstChild("Speed Boost", true)
+                    local skate = playerGui:FindFirstChild("High Speed Skating", true)
+
+                    if skate and skate.Visible then
+                        if currentMode ~= "skate" then
+                            currentMode = "skate"
+                            setSpeed(Config.Skate)
+                        end
+                        return
+                    end
+
+                    if boost and boost.Visible then
+                        if currentMode ~= "boost" then
+                            currentMode = "boost"
+                            setSpeed(Config.Boost)
+                        end
+                        return
+                    end
+
+                    local stack = wind and wind:FindFirstChild("EffectStack", true)
+                    if stack and (stack:IsA("TextLabel") or stack:IsA("TextButton")) then
+                        if tonumber(stack.Text) and tonumber(stack.Text) >= 1 then
+                            if currentMode ~= "wind" then
+                                currentMode = "wind"
+                                setSpeed(Config.Wind)
+                            end
+                            return
+                        end
+                    end
+
+                    if currentMode ~= "default" then
+                        currentMode = "default"
+                        setSpeed(Config.Default)
+                    end
+                end)
+
+                Disabler.MomentumLoop = task.spawn(function()
+                    while Disabler and Disabler.Enabled do
+                        if ServerMomentumUpdate and ServerMomentumUpdate.OnClientEvent then
+                            firesignal(ServerMomentumUpdate.OnClientEvent, { momentumIncrement = 9e9 })
+                        end
+                        task.wait(0.
