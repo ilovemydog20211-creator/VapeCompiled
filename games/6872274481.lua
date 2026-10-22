@@ -27600,10 +27600,13 @@ end)
 run(function()
     local Disabler
 
-    local DEFAULT_SPEED = 23
-    local WIND_SPEED = 34
-    local BOOST_SPEED = 40
-    local SKATE_SPEED = 20
+    -- Configuration table to allow dynamic updates via dropdowns
+    local Config = {
+        DefaultSpeed = 23,
+        WindSpeed = 34,
+        BoostSpeed = 40,
+        SkateSpeed = 20,
+    }
 
     local currentMode = "default"
     local lastCheck = 0
@@ -27638,7 +27641,7 @@ run(function()
         end
 
         currentMode = "default"
-        setSpeed(DEFAULT_SPEED)
+        setSpeed(Config.DefaultSpeed)
     end
 
     Disabler = vape.Categories.Blatant:CreateModule({
@@ -27647,30 +27650,32 @@ run(function()
             if callback then
                 cleanupDisabler()
 
-                -- 🔁 Status checker (every 0.5s)
+                -- 🔁 Status checker (Optimized heartbeat)
                 Disabler.CheckLoop = runService.Heartbeat:Connect(function()
                     if tick() - lastCheck < 0.5 then return end
                     lastCheck = tick()
 
                     local playerGui = lplr:FindFirstChildOfClass("PlayerGui")
-                    local wind = playerGui and playerGui:FindFirstChild("WindWalkerEffect", true)
-                    local boost = playerGui and playerGui:FindFirstChild("Speed Boost", true)
-                    local skate = playerGui and playerGui:FindFirstChild("High Speed Skating", true)
+                    if not playerGui then return end
 
-                    -- 🛼 High Speed Skating (highest priority)
-                    if skate and skate.Visible ~= false then
+                    local wind = playerGui:FindFirstChild("WindWalkerEffect", true)
+                    local boost = playerGui:FindFirstChild("Speed Boost", true)
+                    local skate = playerGui:FindFirstChild("High Speed Skating", true)
+
+                    -- 🛼 High Speed Skating
+                    if skate and skate.Visible then
                         if currentMode ~= "skate" then
                             currentMode = "skate"
-                            setSpeed(SKATE_SPEED)
+                            setSpeed(Config.SkateSpeed)
                         end
                         return
                     end
 
                     -- ⚡ Speed Boost
-                    if boost and boost.Visible ~= false then
+                    if boost and boost.Visible then
                         if currentMode ~= "boost" then
                             currentMode = "boost"
-                            setSpeed(BOOST_SPEED)
+                            setSpeed(Config.BoostSpeed)
                         end
                         return
                     end
@@ -27682,16 +27687,16 @@ run(function()
                         if num and num >= 1 then
                             if currentMode ~= "wind" then
                                 currentMode = "wind"
-                                setSpeed(WIND_SPEED)
+                                setSpeed(Config.WindSpeed)
                             end
                             return
                         end
                     end
 
-                    -- 🔄 Reset
+                    -- 🔄 Reset to default
                     if currentMode ~= "default" then
                         currentMode = "default"
-                        setSpeed(23)
+                        setSpeed(Config.DefaultSpeed)
                     end
                 end)
 
@@ -27711,17 +27716,14 @@ run(function()
                 Disabler.DeathConn = lplr.CharacterAdded:Connect(function()
                     task.wait(0.1)
                     currentMode = "default"
-                    setSpeed(DEFAULT_SPEED)
+                    setSpeed(Config.DefaultSpeed)
                 end)
 
             else
                 cleanupDisabler()
             end
-        end,
-        ExtraText = function() return "Bedwars Developers" end,
-        Tooltip = "Semi disables the ac with 3 different ways"
-    })
-end)
+        },
+        ExtraText = function()
 run(function()
 	local LagbackNotifier
 	
