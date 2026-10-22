@@ -1,11 +1,14 @@
+import asyncio
 import hashlib
+import ipaddress
 import json
 import os
 import re
 import secrets
 import threading
 import time
-import asyncio
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -28,6 +31,103 @@ MAX_KEY_LIFETIME = timedelta(days=30)
 RATE_LIMIT = 60
 RATE_WINDOW_SECONDS = 60
 MAX_BODY_BYTES = 1024
+
+# --- IP logging -------------------------------------------------------------
+GEOIP_ENABLED = os.environ.get("GEOIP_ENABLED", "1") != "0"
+GEOIP_URL = (
+    "http://ip-api.com/json/{ip}"
+    "?fields=status,country,countryCode,regionName,city,isp,org,as"
+)
+GEOIP_TIMEOUT = 2.5
+GEOIP_CACHE_SECONDS = 3600
+GEOIP_FAILURE_CACHE_SECONDS = 60
+MAX_IP_HISTORY = 10
+TRUST_PROXY_HEADERS = os.environ.get("TRUST_PROXY_HEADERS", "1") != "0"
+
+
+_geo_cache = {}
+_geo_lock = threading.Lock()
+
+
+def normalise_ip(value):
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if not candidate:
+        return None
+    if candidate.startswith("[") and "]" in candidate:
+        candidate = candidate[1:candidate.index("]")]
+    try:
+        return str(ipaddress.ip_address(candidate))
+    except ValueError:
+        return None
+
+
+def resolve_client_ip(handler):
+    if TRUST_PROXY_HEADERS:
+        forwarded = handler.headers.get("X-Forwarded-For")
+        if forwarded:
+            for candidate in forwarded.split(","):
+                parsed = normalise_ip(candidate)
+                if parsed:
+                    return parsed
+        real_ip = normalise_ip(handler.headers.get("X-Real-IP") or "")
+        if real_ip:
+            return real_ip
+    return normalise_ip(handler.client_address[0]) or handler.client_address[0]
+
+
+def lookup_ip(ip):
+    """Best-effort geo/ISP lookup. Never raises, returns None on failure."""
+    if not ip or not GEOIP_ENABLED:
+        return None
+    try:
+        parsed = ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+    if not parsed.is_global:
+        return {"label": "private / local network", "isp": None}
+
+    now = time.monotonic()
+    with _geo_lock:
+        cached = _geo_cache.get(ip)
+        if cached and now - cached[0] < cached[2]:
+            return cached[1]
+
+    result = None
+    try:
+        with urllib.request.urlopen(
+            GEOIP_URL.format(ip=ip), timeout=GEOIP_TIMEOUT
+        ) as response:
+            data = json.loads(response.read().decode("utf-8", "replace"))
+        if isinstance(data, dict) and data.get("status") == "success":
+            place = ", ".join(
+                part
+                for part in (
+                    data.get("city"),
+                    data.get("regionName"),
+                    data.get("country"),
+                )
+                if part
+            )
+            result = {
+                "label": place or "unknown",
+                "isp": data.get("isp") or data.get("org") or data.get("as"),
+            }
+    except (urllib.error.URLError, OSError, ValueError) as error:
+        print(f"GeoIP lookup for {ip} failed: {error}")
+
+    with _geo_lock:
+        _geo_cache[ip] = (
+            now,
+            result,
+            GEOIP_CACHE_SECONDS if result else GEOIP_FAILURE_CACHE_SECONDS,
+        )
+        if len(_geo_cache) > 5000:
+            for stale_ip, entry in list(_geo_cache.items()):
+                if now - entry[0] >= entry[2]:
+                    _geo_cache.pop(stale_ip, None)
+    return result
 
 
 def parse_key_lifetime(value):
@@ -208,6 +308,49 @@ class KeyStore:
                 self.users = {}
             return records
 
+    def get_record(self, discord_id):
+        with self.lock:
+            record = self.users.get(str(discord_id))
+            return dict(record) if record is not None else None
+
+    def note_ip(self, discord_id, client_ip, max_history=MAX_IP_HISTORY):
+        """Record a seen IP. Only writes to disk when the IP set changes."""
+        if not client_ip:
+            return None
+        discord_id = str(discord_id)
+        now = datetime.now(timezone.utc).isoformat()
+        with self.lock:
+            record = self.users.get(discord_id)
+            if record is None:
+                return None
+
+            history = list(record.get("ipHistory") or [])
+            first_ip = record.get("firstIp") or client_ip
+            is_new = client_ip not in history
+            if is_new:
+                history.append(client_ip)
+                history = history[-max_history:]
+
+            if is_new:
+                updated_record = dict(record)
+                updated_record["firstIp"] = first_ip
+                updated_record["lastIp"] = client_ip
+                updated_record["lastSeenAt"] = now
+                updated_record["ipHistory"] = history
+                updated_users = dict(self.users)
+                updated_users[discord_id] = updated_record
+                self._save(updated_users)
+                self.users = updated_users
+            else:
+                record["lastSeenAt"] = now
+
+            return {
+                "first_ip": first_ip,
+                "last_ip": client_ip,
+                "new_ip": is_new,
+                "history": history,
+            }
+
 
 def make_api_handler(key_store, on_key_validation=None):
     rate_lock = threading.Lock()
@@ -230,7 +373,7 @@ def make_api_handler(key_store, on_key_validation=None):
                 return
 
             now = time.monotonic()
-            client_ip = self.client_address[0]
+            client_ip = resolve_client_ip(self)
             with rate_lock:
                 window = rate_windows.get(client_ip)
                 if window is None or now - window[0] >= RATE_WINDOW_SECONDS:
@@ -288,6 +431,9 @@ def make_api_handler(key_store, on_key_validation=None):
                     payload["key"],
                     payload["robloxUserId"],
                 )
+                ip_info = (
+                    key_store.note_ip(owner_id, client_ip) if owner_id else None
+                )
             except OSError as error:
                 print(f"Could not save Roblox key binding: {error}")
                 self._send_json(500, {"error": "Could not save key binding"})
@@ -301,12 +447,15 @@ def make_api_handler(key_store, on_key_validation=None):
                         payload["robloxUserId"],
                         result,
                         expires_at,
+                        client_ip,
+                        ip_info,
                     )
             self._send_json(
                 200,
                 {
                     "valid": result == "valid",
                     "reason": result,
+                    "ip": client_ip,
                 },
             )
 
@@ -377,8 +526,12 @@ def main():
             "expires_at": "Expires (UTC)",
             "duration": "Duration",
             "count": "Keys affected",
+            "client_ip": "Client IP",
+            "first_ip": "First seen IP",
         }
         affected_records = details.pop("affected_records", [])
+        ip_info = details.pop("ip_info", None)
+        client_ip = details.get("client_ip")
         for name, value in details.items():
             if value is None:
                 continue
@@ -389,6 +542,8 @@ def main():
                     f"[View Roblox profile](https://www.roblox.com/users/"
                     f"{value}/profile) (`{value}`)"
                 )
+            elif name in {"client_ip", "first_ip"}:
+                value = f"`{value}`"
             elif name == "expires_at":
                 try:
                     value = f"<t:{int(parse_timestamp(value).timestamp())}:F>"
@@ -414,6 +569,21 @@ def main():
                 value=f"{len(affected_records) - 20} more affected",
                 inline=True,
             )
+        if client_ip:
+            geo = await asyncio.to_thread(lookup_ip, client_ip)
+            if geo:
+                location = geo["label"]
+                if geo.get("isp"):
+                    location += f"\n{geo['isp']}"
+                embed.add_field(name="Approx. location", value=location, inline=True)
+            if ip_info and ip_info.get("first_ip") != client_ip:
+                embed.add_field(
+                    name="First seen IP",
+                    value=f"`{ip_info['first_ip']}`",
+                    inline=True,
+                )
+            if ip_info and ip_info.get("new_ip") and len(ip_info["history"]) > 1:
+                embed.add_field(name="Note", value="New IP for this key", inline=True)
         embed.set_footer(text="VapeCompiled Key Audit")
         if channel is None:
             print(f"Key audit event (no #key-usage-logs channel): {event} {details}")
@@ -431,7 +601,9 @@ def main():
         except discord.HTTPException as error:
             print(f"Could not write key audit event: {error}")
 
-    def queue_key_validation_log(owner_id, roblox_user_id, result, expires_at):
+    def queue_key_validation_log(
+        owner_id, roblox_user_id, result, expires_at, client_ip, ip_info
+    ):
         future = asyncio.run_coroutine_threadsafe(
             log_key_event(
                 "key_validated",
@@ -439,6 +611,8 @@ def main():
                 roblox_user_id=roblox_user_id,
                 result=result,
                 expires_at=expires_at,
+                client_ip=client_ip,
+                ip_info=ip_info,
             ),
             bot.loop,
         )
@@ -468,6 +642,7 @@ def main():
                 "`.revoke @user` or `.revoke all` — revoke keys\n"
                 "`.delete all` — delete all active keys\n"
                 "`.kick @user` — revoke their key and kick a running client\n"
+                "`.ip [@user]` — show recorded IPs for a key (admins: any user)\n"
                 "`.logs` — create or secure the private key audit channel\n\n"
                 "Durations: `1m`, `1h`, `7d`, `1w`, or `1 month`.\n"
                 "Key issuance and revocation require the configured admin role "
@@ -517,6 +692,75 @@ def main():
                         reason="Secure the key usage log channel",
                     )
             await message.reply(f"Key usage logs are enabled in {channel.mention}.")
+            return
+
+        ip_match = re.fullmatch(r"[.,]ip(?:\s+<@!?(\d+)>)?", command)
+        if ip_match:
+            target_id = ip_match.group(1) or str(message.author.id)
+            if target_id != str(message.author.id) and not is_server_admin(message):
+                await message.reply("Only admins can look up another user's IPs.")
+                return
+            record = key_store.get_record(target_id)
+            if record is None:
+                await message.reply("That user has no key record.")
+                return
+
+            embed = discord.Embed(
+                title="Key IP record",
+                color=discord.Color.blurple(),
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed.add_field(name="Discord user", value=f"<@{target_id}>", inline=True)
+            if record.get("robloxUserId"):
+                embed.add_field(
+                    name="Roblox account",
+                    value=(
+                        f"[Profile](https://www.roblox.com/users/"
+                        f"{record['robloxUserId']}/profile) "
+                        f"(`{record['robloxUserId']}`)"
+                    ),
+                    inline=True,
+                )
+            embed.add_field(
+                name="First seen IP",
+                value=f"`{record.get('firstIp') or 'unknown'}`",
+                inline=True,
+            )
+            embed.add_field(
+                name="Last seen IP",
+                value=f"`{record.get('lastIp') or 'unknown'}`",
+                inline=True,
+            )
+            if record.get("lastSeenAt"):
+                embed.add_field(
+                    name="Last seen",
+                    value=f"<t:{int(parse_timestamp(record['lastSeenAt']).timestamp())}:R>",
+                    inline=True,
+                )
+            if record.get("expiresAt"):
+                embed.add_field(
+                    name="Expires",
+                    value=f"<t:{int(parse_timestamp(record['expiresAt']).timestamp())}:F>",
+                    inline=True,
+                )
+            history = record.get("ipHistory") or []
+            if len(history) > 1:
+                embed.add_field(
+                    name=f"IP history ({len(history)})",
+                    value="\n".join(f"`{item}`" for item in history),
+                    inline=False,
+                )
+            last_ip = record.get("lastIp")
+            if last_ip:
+                geo = await asyncio.to_thread(lookup_ip, last_ip)
+                if geo:
+                    embed.add_field(
+                        name="Approx. location",
+                        value=geo["label"],
+                        inline=True,
+                    )
+            embed.set_footer(text="VapeCompiled Key Audit")
+            await message.reply(embed=embed)
             return
 
         kick_match = re.fullmatch(r"[.,]kick\s+<@!?(\d+)>", command)
@@ -670,7 +914,6 @@ def main():
             duration=key_match.group(2) or "30d",
             expires_at=expires_at,
         )
-
 
     @bot.event
     async def on_ready():
